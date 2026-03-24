@@ -5302,7 +5302,7 @@ async function registerServiceWorker() {
       if (!newSW) return;
       newSW.addEventListener('statechange', () => {
         if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
-          showToast('Mise a jour disponible - rechargez pour l'appliquer.', 'success');
+          showToast('Mise à jour disponible — rechargez pour l\'appliquer.', 'success');
         }
       });
     });
