@@ -696,6 +696,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .op-num{font-family:'Courier New',monospace;font-size:.82rem;color:#94A3B8}
 /* Admin login */
 #page-admin-login{background:#080C14;min-height:100vh;display:none;flex-direction:column;align-items:center;justify-content:center}
+#page-admin-login.active{display:flex!important;flex-direction:column;align-items:center;justify-content:center}
 #page-admin-login.active{display:flex}
 .adm-login-box{background:#0D1117;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:40px;width:100%;max-width:380px;text-align:center}
 .adm-login-box h2{font-family:'Syne',sans-serif;font-size:1.4rem;font-weight:800;margin-bottom:6px;color:#E2E8F0}
@@ -4940,9 +4941,9 @@ function showPage(id){
   if(id==='page-login') { setTimeout(initLoginPage, 50); }
   if(id==='page-admin'){
     if(!AdminAuth.isLogged()){
-      document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-      document.getElementById('page-admin-login')?.classList.add('active');
-      setTimeout(()=>document.getElementById('adm-pwd')?.focus(),200);
+      document.querySelectorAll('.page').forEach(p=>{p.classList.remove('active');p.style.display='none';});
+      const _pal=document.getElementById('page-admin-login');
+      if(_pal){_pal.style.display='flex';_pal.classList.add('active');setTimeout(()=>document.getElementById('adm-pwd')?.focus(),300);}
     } else {
       adminSection('overview');
       startAdminClock();
@@ -5288,50 +5289,79 @@ function renderFirebaseStatus() {}     // no-op
  */
 async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) {
-    console.info('ℹ️ Service Worker non supporté sur ce navigateur.');
+    console.info('[PWA] Service Worker non supporte.');
     return null;
   }
   try {
-    const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
-    console.log('✅ Service Worker enregistré — scope:', registration.scope);
+    const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' });
+    console.log('[PWA] SW enregistre:', reg.scope);
 
-    // Vérifier les mises à jour du SW
-    registration.addEventListener('updatefound', () => {
-      const newSW = registration.installing;
-      newSW?.addEventListener('statechange', () => {
-        if (newSW.statechange === 'installed' && navigator.serviceWorker.controller) {
-          showToast('🔄 Mise à jour disponible — rechargez la page pour l\'appliquer.', 'success');
+    // Mise a jour disponible
+    reg.addEventListener('updatefound', () => {
+      const newSW = reg.installing;
+      if (!newSW) return;
+      newSW.addEventListener('statechange', () => {
+        if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+          showToast('Mise a jour disponible - rechargez pour l'appliquer.', 'success');
         }
       });
     });
 
-    // Écouter les messages du SW (sync terminée, etc.)
+    // Messages du SW
     navigator.serviceWorker.addEventListener('message', onSwMessage);
 
-    return registration;
+    // Queue size au demarrage
+    navigator.serviceWorker.ready.then(r => {
+      if (r.active) r.active.postMessage({ type: 'GET_QUEUE_SIZE' });
+    });
+
+    return reg;
   } catch(err) {
-    console.warn('⚠️ Enregistrement SW échoué:', err.message);
+    console.warn('[PWA] SW echec:', err.message);
     return null;
   }
 }
 
 /** Gère les messages reçus depuis le Service Worker */
 function onSwMessage(event) {
-  const { type, synced, pending } = event.data || {};
+  const { type, synced, pending, ids, size } = event.data || {};
 
-  if (type === 'SYNC_COMPLETE') {
-    console.log(`[App] Sync SW terminée — ${synced} réussies, ${pending} en attente`);
-    if (synced > 0) {
-      showToast(`✅ ${synced} action(s) synchronisée(s) avec le serveur !`, 'success');
-    }
-    updateOfflineQueueBadge(pending);
-    if (pending === 0) {
-      updateConnIndicator('online');
-    }
-  }
+  switch(type) {
 
-  if (type === 'QUEUE_SIZE') {
-    updateOfflineQueueBadge(event.data.size);
+    // Sync background terminée
+    case 'SYNC_COMPLETE':
+      console.log('[App] Sync SW:', synced, 'ok,', pending, 'en attente');
+      if (synced > 0) showToast('✅ ' + synced + ' action(s) synchronisée(s) !', 'success');
+      updateOfflineQueueBadge(pending || 0);
+      if ((pending || 0) === 0) updateConnIndicator('online');
+      break;
+
+    // SW demande la file d'attente pour la synchroniser
+    case 'GET_QUEUE':
+      const queue = OfflineQueue.getAll();
+      event.ports[0]?.postMessage({ queue });
+      break;
+
+    // SW a synced des items → les retirer de la file locale
+    case 'REMOVE_SYNCED':
+      if (ids && ids.length > 0) {
+        OfflineQueue.remove(ids);
+        console.log('[App] Queue nettoyée —', ids.length, 'item(s) supprimé(s)');
+      }
+      break;
+
+    // Taille de la queue
+    case 'QUEUE_SIZE':
+      updateOfflineQueueBadge(size || 0);
+      break;
+
+    // SW demande a l'app de traiter sa propre queue (fallback sans Background Sync)
+    case 'PROCESS_SYNC_QUEUE':
+      if (navigator.onLine) syncOfflineQueue();
+      break;
+
+    default:
+      console.log('[App] Message SW inconnu:', type);
   }
 }
 
@@ -5510,6 +5540,10 @@ const OfflineQueue = {
     queue.push(item);
     localStorage.setItem(this.STORE, JSON.stringify(queue));
     updateOfflineQueueBadge(queue.length);
+    // Notifier le SW de la nouvelle queue
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'SAVE_QUEUE', data: queue });
+    }
     console.log('[OfflineQueue] Action mise en file:', action.type, '— Total:', queue.length);
     return item;
   },
@@ -5826,12 +5860,13 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
   // 4. Init système offline (indicateurs, listeners, queue)
   initOfflineSystem();
 
-  // 3. Vérifier admin token dans URL
+  // 5. Vérifier admin token dans URL
   const params = new URLSearchParams(window.location.search);
   const urlToken = params.get('admin');
   if (urlToken) {
     const cfg = typeof ADB !== 'undefined' ? ADB.getCfg() : {};
-    const validToken = cfg.token || 'DIGITALE';
+    const validToken = (cfg && cfg.token) ? cfg.token : 'DIGITALE';
+
     if (urlToken === validToken) {
       if (typeof AdminAuth !== 'undefined' && AdminAuth.isLogged()) {
         showPage('page-admin');
@@ -5839,9 +5874,17 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
         if (typeof startAdminClock !== 'undefined') startAdminClock();
         if (typeof updatePayBadge !== 'undefined') updatePayBadge();
       } else {
-        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        // Afficher la page login admin de façon explicite
+        document.querySelectorAll('.page').forEach(p => {
+          p.classList.remove('active');
+          p.style.display = 'none';
+        });
         const pal = document.getElementById('page-admin-login');
-        if (pal) { pal.classList.add('active'); setTimeout(() => document.getElementById('adm-pwd')?.focus(), 200); }
+        if (pal) {
+          pal.style.display = 'flex';
+          pal.classList.add('active');
+          setTimeout(() => document.getElementById('adm-pwd')?.focus(), 300);
+        }
       }
     } else {
       showPage('page-landing');
