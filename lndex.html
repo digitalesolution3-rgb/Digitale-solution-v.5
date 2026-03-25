@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Caisse Pro">
+<meta name="theme-color" content="#0A0E12">
+<meta name="description" content="Caisse SaaS Pro - Gestion de caisse, abonnements, dépenses et bénéfices">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+<title>Caisse SaaS Pro - Gestion de caisse + Dépenses & Bénéfices</title>
+
+<!-- Firebase SDK -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-firestore-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-auth-compat.min.js"></script>
+
+<!-- React + Babel -->
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:'DM Mono','Courier New',monospace;-webkit-tap-highlight-color:transparent}
+#root{height:100dvh;display:flex;flex-direction:column}
+input,button,select{font-family:inherit}
+button{cursor:pointer;transition:opacity .12s,transform .12s}
+button:active{opacity:.72!important;transform:scale(.96)!important}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{border-radius:2px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin .8s linear infinite}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes marquee{0%{transform:translateX(100%)}100%{transform:translateX(-100%)}}
+.marquee{animation:marquee 25s linear infinite;white-space:nowrap;display:inline-block;padding-right:50px}
+@media (min-width: 960px) {
+  .desktop-grid { display: flex; flex-direction: row; height: 100dvh; overflow: hidden; }
+  .desktop-sidebar { width: 380px; border-left: 1px solid var(--border); flex-shrink: 0; overflow-y: auto; }
+  .desktop-main { flex: 1; overflow-y: auto; min-width: 0; }
+  .product-grid { grid-template-columns: repeat(3, 1fr) !important; }
+}
+@media (max-width: 959px) {
+  .product-grid { grid-template-columns: repeat(2, 1fr) !important; }
+}
+@media (display-mode: standalone) {
+  body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// Enregistrement du Service Worker pour PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(registration => console.log('SW enregistré:', registration.scope))
+      .catch(error => console.log('Erreur SW:', error));
+  });
+}
+
+// Gestion de l'installation PWA
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  // Afficher un bouton d'installation si nécessaire
+  window.dispatchEvent(new CustomEvent('pwa-install-ready', { detail: deferredPrompt }));
+});
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ══════════════════════════════════════════════════════════════════
+//  CONFIG
+// ══════════════════════════════════════════════════════════════════
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD9nisNmNnagzRp-jNlwTbJ7q5bdPtF9Jw",
+  authDomain: "inte-84ea7.firebaseapp.com",
+  projectId: "inte-84ea7",
+  storageBucket: "inte-84ea7.firebasestorage.app",
+  messagingSenderId: "958738051181",
+  appId: "1:958738051181:web:e305c5d8cb1a4b95680f64",
+};
+
+let db = null, auth = null;
+try {
+  if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+  db = firebase.firestore();
+  auth = firebase.auth();
+  db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+} catch(e) { console.warn(e); }
+
+const DEV_PIN = "761278";
+const DEV_WHATSAPP = "22678548317";
+
+// ══════════════════════════════════════════════════════════════════
+//  THÈMES
+// ══════════════════════════════════════════════════════════════════
+const THEMES = {
+  dark: { id:"dark", label:"🌙", bg:"#0A0E12", surface:"#111620", surface2:"#161C28", header:"#080C10", border:"#1E2630", text:"#E8E4DA", textSub:"#A8A49A", textMute:"#3A4050", accent:"#F5C842", green:"#22DD88", blue:"#5AB4FF", red:"#FF5555", orange:"#FF8844", purple:"#AA77FF", inputBg:"#080C10", inputBd:"#252D3A", shadow:"0 8px 32px rgba(0,0,0,.6)", btnGreen:{bg:"#0A2018",border:"#1A5030",color:"#22DD88"}, btnBlue:{bg:"#0D1E2E",border:"#1A3548",color:"#5AB4FF"}, btnRed:{bg:"#1E0808",border:"#3A1818",color:"#FF5555"}, btnAccent:{bg:"#F5C842",border:"none",color:"#0A0E12"} },
+  light: { id:"light", label:"☀️", bg:"#F4F6F8", surface:"#FFFFFF", surface2:"#E8ECF0", header:"#FFFFFF", border:"#D0D8E0", text:"#1A2030", textSub:"#4A5568", textMute:"#9AA5B4", accent:"#D4A017", green:"#1A9E5A", blue:"#2878C8", red:"#D93030", orange:"#D06020", purple:"#7C50DD", inputBg:"#F8FAFC", inputBd:"#C8D4DE", shadow:"0 4px 20px rgba(0,0,0,.12)", btnGreen:{bg:"#E8F8EE",border:"#A8DDBC",color:"#1A7A45"}, btnBlue:{bg:"#EAF2FC",border:"#A8C8EE",color:"#1A60A8"}, btnRed:{bg:"#FDEAEA",border:"#F0B0B0",color:"#B02020"}, btnAccent:{bg:"#D4A017",border:"none",color:"#FFFFFF"} },
+  neon: { id:"neon", label:"⚡", bg:"#03050A", surface:"#080D14", surface2:"#0C1220", header:"#020408", border:"#0E2040", text:"#E0F8FF", textSub:"#70B8D8", textMute:"#1A3050", accent:"#00FFCC", green:"#00FF88", blue:"#00C8FF", red:"#FF2255", orange:"#FF8800", purple:"#CC44FF", inputBg:"#040810", inputBd:"#0E2040", shadow:"0 0 30px rgba(0,255,200,.15)", btnGreen:{bg:"#001A10",border:"#00FF8855",color:"#00FF88"}, btnBlue:{bg:"#001428",border:"#00C8FF55",color:"#00C8FF"}, btnRed:{bg:"#1A0010",border:"#FF225555",color:"#FF2255"}, btnAccent:{bg:"#00FFCC",border:"none",color:"#000000"} },
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  UTILS
+// ══════════════════════════════════════════════════════════════════
+function fmtPrice(n) { if (!n && n !== 0) return "0 F"; return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " F"; }
+function formatDate(ts) { if(!ts) return "—"; return new Date(ts).toLocaleDateString("fr-FR"); }
+function formatDateTime(ts) { if(!ts) return "—"; return new Date(ts).toLocaleString("fr-FR"); }
+function getDaysLeft(endTimestamp) { if(!endTimestamp) return 0; const diff = endTimestamp - Date.now(); return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24))); }
+function getPlanDuration(plan) { switch(plan) { case "mensuel": return 30; case "trimestriel": return 90; case "annuel": return 365; default: return 30; } }
+function calculateEndDate(startDate, plan) { const end = new Date(startDate); end.setDate(end.getDate() + getPlanDuration(plan)); return end.getTime(); }
+function getStoreKey(shopId, type) { return `pos_${shopId}_${type}`; }
+function getDateKey(timestamp) { return new Date(timestamp).toISOString().slice(0,10); }
+function getMonthKey(timestamp) { return new Date(timestamp).toISOString().slice(0,7); }
+function getYearKey(timestamp) { return new Date(timestamp).toISOString().slice(0,4); }
+
+class OfflineStore {
+  static get(shopId, type) { try { const d = localStorage.getItem(getStoreKey(shopId, type)); return d ? JSON.parse(d) : []; } catch(e){ return []; } }
+  static set(shopId, type, data) { try { localStorage.setItem(getStoreKey(shopId, type), JSON.stringify(data || [])); } catch(e){} }
+}
+
+function syncShopData(shopId, setProducts, setSales, setStockMovements, setExpenses) {
+  if(!db) return ()=>{};
+  const unsubProds = db.collection("shops").doc(shopId).collection("products").onSnapshot(snap => {
+    const prods = snap.docs.map(d=>({id:d.id, ...d.data()})).filter(p => p.id !== "_init");
+    OfflineStore.set(shopId, "products", prods);
+    setProducts && setProducts(prods);
+  });
+  const unsubSales = db.collection("shops").doc(shopId).collection("sales").onSnapshot(snap => {
+    const sales = snap.docs.map(d=>({id:d.id, ...d.data()})).filter(s => s.id !== "_init");
+    OfflineStore.set(shopId, "sales", sales);
+    setSales && setSales(sales);
+  });
+  const unsubMovements = db.collection("shops").doc(shopId).collection("stock_movements").onSnapshot(snap => {
+    const movements = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    OfflineStore.set(shopId, "stock_movements", movements);
+    setStockMovements && setStockMovements(movements);
+  });
+  const unsubExpenses = db.collection("shops").doc(shopId).collection("expenses").onSnapshot(snap => {
+    const expenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    OfflineStore.set(shopId, "expenses", expenses);
+    setExpenses && setExpenses(expenses);
+  });
+  return () => { unsubProds(); unsubSales(); unsubMovements(); unsubExpenses(); };
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  IMPRESSION BLE - ESC/POS 80mm
+// ══════════════════════════════════════════════════════════════════
+class BLEPrinter {
+  constructor() { this.device = null; this.server = null; this.characteristic = null; this.connected = false; this.listeners = []; this.reconnecting = false; this._keepAliveTimer = null; this._printing = false; }
+  subscribe(callback) { this.listeners.push(callback); return () => { this.listeners = this.listeners.filter(l => l !== callback); }; }
+  notify(data) { this.listeners.forEach(l => l(data)); }
+  async connect() { if (!navigator.bluetooth) throw new Error("Web Bluetooth non disponible"); this.notify({ status: "searching", message: "Recherche d'imprimante..." }); const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: ["000018f0-0000-1000-8000-00805f9b34fb", "e7810a71-73ae-499d-8c15-faa9aef0c3f2", "49535343-fe7d-4ae5-8fa9-9fafd205e455", "0000ff00-0000-1000-8000-00805f9b34fb"] }); this.device = device; device.addEventListener("gattserverdisconnected", () => { this.connected = false; this.characteristic = null; this.notify({ status: "disconnected", message: "Imprimante déconnectée" }); this.autoReconnect(); }); await this.doConnect(); this._startKeepAlive(); this.notify({ status: "connected", message: `Connecté à ${device.name || "Imprimante"}`, name: device.name }); return device.name; }
+  async doConnect() { this.server = await this.device.gatt.connect(); const services = await this.server.getPrimaryServices(); let foundChar = null; for (const service of services) { const chars = await service.getCharacteristics(); for (const char of chars) { if (char.properties.write || char.properties.writeWithoutResponse) { foundChar = char; break; } } if (foundChar) break; } if (!foundChar) throw new Error("Caractéristique d'écriture introuvable"); this.characteristic = foundChar; this.connected = true; }
+  _startKeepAlive() { if (this._keepAliveTimer) clearInterval(this._keepAliveTimer); this._keepAliveTimer = setInterval(async () => { if (!this.connected || this._printing) return; try { if (this.characteristic && this.device?.gatt?.connected) { const noop = new Uint8Array([0x1B, 0x00]); await this.characteristic.writeValueWithoutResponse(noop); } } catch(e) { this.connected = false; this.autoReconnect(); } }, 8000); }
+  _stopKeepAlive() { if (this._keepAliveTimer) { clearInterval(this._keepAliveTimer); this._keepAliveTimer = null; } }
+  async autoReconnect() { if (this.reconnecting) return; this.reconnecting = true; this.notify({ status: "reconnecting", message: "Tentative de reconnexion..." }); for (let i = 0; i < 5; i++) { await new Promise(r => setTimeout(r, 2000)); try { if (this.device && this.device.gatt) { await this.doConnect(); this.reconnecting = false; this._startKeepAlive(); this.notify({ status: "connected", message: "Reconnecté !", name: this.device.name }); return; } } catch(e) {} } this.reconnecting = false; this.notify({ status: "disconnected", message: "Reconnexion échouée" }); }
+  async disconnect() { this._stopKeepAlive(); if (this.device && this.device.gatt.connected) { this.device.gatt.disconnect(); } this.connected = false; this.characteristic = null; this.notify({ status: "disconnected", message: "Déconnecté" }); }
+  async print(data) { if (!this.connected || !this.characteristic) throw new Error("Imprimante non connectée"); this._printing = true; const chunkSize = 95; const useWrite = this.characteristic.properties.writeWithoutResponse === false; try { for (let i = 0; i < data.length; i += chunkSize) { const chunk = data.slice(i, i + chunkSize); if (useWrite) await this.characteristic.writeValue(chunk); else await this.characteristic.writeValueWithoutResponse(chunk); await new Promise(r => setTimeout(r, 40)); } } finally { this._printing = false; } }
+}
+const printer = new BLEPrinter();
+
+// ESC/POS Commands
+const ESC = 0x1B; const GS = 0x1D; const LF = 0x0A; const COL = 42;
+function buildESCPOSTicket(shopName, shopPhone, items, total, invoiceNum) {
+  const buf = []; const push = (arr) => buf.push(...arr); const text = (str) => { for (let i = 0; i < str.length; i++) { let code = str.charCodeAt(i); if (code >= 32 && code <= 126) buf.push(code); else if (code === 0xE9 || code === 0xE8) buf.push(0x65); else if (code === 0xE0) buf.push(0x61); else if (code === 0xF9) buf.push(0x75); else if (code === 0xE7) buf.push(0x63); } }; const line = (str) => { text(str); push([LF]); }; push([ESC, 0x40]); push([ESC, 0x61, 0x01]); push([ESC, 0x45, 0x01]); line(shopName.toUpperCase().slice(0, COL)); push([ESC, 0x45, 0x00]); if (shopPhone) line("Tel: " + shopPhone); const d = new Date(); const dateStr = `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getFullYear()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; line(dateStr); if (invoiceNum) line("N° " + String(invoiceNum).slice(-8)); push([ESC, 0x61, 0x00]); line("-".repeat(COL)); items.forEach(it => { const label = (it.label || "Article").slice(0, 28); const qty = it.qty || 1; const price = it.amount; const totalLine = price * qty; const priceStr = fmtPrice(totalLine); const spaces = Math.max(1, COL - label.length - priceStr.length); line(label + " ".repeat(spaces) + priceStr); if (qty > 1) line("  @ " + fmtPrice(price)); }); line("-".repeat(COL)); push([ESC, 0x45, 0x01]); const totalStr = "TOTAL" + " ".repeat(Math.max(1, COL - 5 - fmtPrice(total).length)) + fmtPrice(total); line(totalStr); push([ESC, 0x45, 0x00]); line("=".repeat(COL)); push([ESC, 0x61, 0x01]); line("Merci pour votre achat !"); line(shopName.slice(0, COL)); push([ESC, 0x64, 0x04]); push([GS, 0x56, 0x41, 0x03]); return new Uint8Array(buf); }
+async function printViaBLE(shopName, shopPhone, items, total, invoiceNum) { if (!printer.connected) throw new Error("Imprimante non connectée"); const ticket = buildESCPOSTicket(shopName, shopPhone, items, total, invoiceNum); await printer.print(ticket); return true; }
+function printFallback(shopName, shopPhone, items, total, invoiceNum) { let html = `<html><head><meta charset="utf-8"><title>Ticket</title><style>body{font-family:monospace;width:70mm;margin:0 auto;padding:10px}.center{text-align:center}.item{display:flex;justify-content:space-between;margin:3px 0}.total{display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px dashed #000;font-weight:bold}</style></head><body>`; html += `<div class="center bold">${shopName.toUpperCase()}</div>`; if(shopPhone) html += `<div class="center">Tel: ${shopPhone}</div>`; html += `<div class="center">${new Date().toLocaleString()}</div>`; if(invoiceNum) html += `<div class="center">N° ${String(invoiceNum).slice(-8)}</div><hr>`; items.forEach(it => { const qty=it.qty||1; html += `<div class="item"><span>${it.label}${qty>1?` x${qty}`:''}</span><span>${fmtPrice(it.amount*qty)}</span></div>`; if(qty>1) html += `<div style="font-size:10px;margin-left:8px;">@ ${fmtPrice(it.amount)}</div>`; }); html += `<hr><div class="total"><span>TOTAL</span><span>${fmtPrice(total)}</span></div><hr><div class="center">Merci !</div></body></html>`; const win = window.open("", "_blank", "width=400,height=600"); if(win) { win.document.write(html); win.document.close(); win.print(); setTimeout(()=>win.close(),1500); } }
+
+// ══════════════════════════════════════════════════════════════════
+//  COMPOSANT BANDE D'ABONNEMENT
+// ══════════════════════════════════════════════════════════════════
+function SubscriptionBanner({ T, shopId }) {
+  const [subscription, setSubscription] = useState(null); const [loading, setLoading] = useState(true);
+  useEffect(() => { if(!db || !shopId) return; const unsub = db.collection("shops").doc(shopId).onSnapshot(doc => { if(doc.exists) { const data = doc.data(); setSubscription({ end: data.subscriptionEnd, plan: data.plan || "mensuel", start: data.subscriptionStart }); } setLoading(false); }); return unsub; }, [shopId]);
+  if(loading || !subscription || !subscription.end) return null;
+  const daysLeft = getDaysLeft(subscription.end); const expired = daysLeft === 0; const warning = daysLeft <= 7 && daysLeft > 0;
+  if(!expired && !warning) return null;
+  const bgColor = expired ? T.red : T.orange;
+  const message = expired ? `⚠️⚠️⚠️ VOTRE ABONNEMENT A EXPIRE ! Veuillez contacter l'administrateur immédiatement pour renouveler. ⚠️⚠️⚠️` : `🔔🔔🔔 Votre abonnement ${subscription.plan === "mensuel" ? "MENSUEL" : subscription.plan === "trimestriel" ? "TRIMESTRIEL" : "ANNUEL"} expire dans ${daysLeft} JOUR${daysLeft > 1 ? "S" : ""} (le ${formatDate(subscription.end)}). Contactez-nous pour renouveler ! 🔔🔔🔔`;
+  return ( <div style={{ background: bgColor, color: "#fff", padding: "10px 12px", overflow: "hidden", whiteSpace: "nowrap", position: "relative", flexShrink: 0, boxShadow: "inset 0 -2px 0 rgba(0,0,0,0.1)", zIndex: 10 }}><div className="marquee" style={{ display: "inline-block", paddingRight: "80px" }}>{message} &nbsp;&nbsp;&nbsp; {message} &nbsp;&nbsp;&nbsp; {message}</div><a href={`https://wa.me/${DEV_WHATSAPP}?text=${encodeURIComponent(`Bonjour, je souhaite renouveler mon abonnement (${subscription.plan})`)}`} target="_blank" rel="noopener noreferrer" style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "#fff", color: "#000", padding: "4px 12px", borderRadius: 25, fontSize: 11, fontWeight: "bold", textDecoration: "none", boxShadow: "0 2px 8px rgba(0,0,0,0.2)", zIndex: 11 }}>📱 WhatsApp</a></div> );
+}
+
+function BLEStatus({ T }) {
+  const [status, setStatus] = useState({ status: "disconnected", message: "Hors ligne" }); const [connecting, setConnecting] = useState(false); const [testPrinting, setTestPrinting] = useState(false);
+  useEffect(() => { const unsub = printer.subscribe(setStatus); return unsub; }, []);
+  const connect = async () => { setConnecting(true); try { await printer.connect(); } catch(e) { setStatus({ status: "error", message: e.message }); } setConnecting(false); };
+  const disconnect = () => printer.disconnect();
+  const testPrint = async () => { if (!printer.connected) { alert("Connectez d'abord l'imprimante"); return; } setTestPrinting(true); try { const testItems = [{ label: "TEST IMPRESSION THERMIQUE", amount: 500, qty: 1 }, { label: "ESC/POS 80mm - Impression BLE", amount: 250, qty: 2 }]; await printViaBLE("TEST", "", testItems, 1000, Date.now()); alert("✅ Impression test envoyée avec succès !"); } catch(e) { alert("❌ Erreur: " + e.message); } setTestPrinting(false); };
+  const isConnected = status.status === "connected"; const color = isConnected ? T.green : (status.status === "searching" || status.status === "reconnecting" ? T.blue : T.red); const icon = isConnected ? "🖨️" : (status.status === "searching" || status.status === "reconnecting" ? "⏳" : "❌");
+  return ( <div style={{ background: T.surface, borderRadius: 12, padding: 10, marginBottom: 12, border: `1px solid ${color}` }}><div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}><div style={{ display: "flex", alignItems: "center", gap: 10 }}><span style={{ fontSize: 24 }}>{icon}</span><div><div style={{ fontSize: 12, fontWeight: 600, color }}>{isConnected ? "Imprimante connectée" : (status.status === "searching" ? "Recherche..." : status.status === "reconnecting" ? "Reconnexion..." : "Hors ligne")}</div>{status.name && <div style={{ fontSize: 10, color: T.textMute }}>{status.name}</div>}{status.message && !isConnected && <div style={{ fontSize: 9, color: T.textMute }}>{status.message}</div>}</div></div><div style={{ display: "flex", gap: 6 }}>{!isConnected ? (<button onClick={connect} disabled={connecting} style={{ background: T.btnGreen.bg, border: `1px solid ${T.btnGreen.border}`, borderRadius: 8, padding: "6px 12px", fontSize: 11, color: T.green, fontWeight: 600 }}>{connecting ? "..." : "🔌 Connecter"}</button>) : (<><button onClick={testPrint} disabled={testPrinting} style={{ background: T.btnBlue.bg, border: `1px solid ${T.btnBlue.border}`, borderRadius: 8, padding: "4px 10px", fontSize: 10, color: T.blue }}>{testPrinting ? "..." : "🖨️ Test"}</button><button onClick={disconnect} style={{ background: T.btnRed.bg, border: `1px solid ${T.btnRed.border}`, borderRadius: 8, padding: "4px 10px", fontSize: 10, color: T.red }}>Déco</button></>)}</div></div>{isConnected && <div style={{ fontSize: 9, color: T.textMute, marginTop: 6, textAlign: "center" }}>✅ ESC/POS 80mm - Prêt à imprimer</div>}</div> );
+}
+
+function VenteRapide({ T, addSale, flashMsg }) {
+  const [lines, setLines] = useState([]); const [montant, setMontant] = useState(""); const [label, setLabel] = useState(""); const [modeMonnaie, setModeMonnaie] = useState(false); const [recu, setRecu] = useState("");
+  const montantNum = parseInt(montant) || 0; const totalLines = lines.reduce((s,l)=>s + l.montant, 0); const recuNum = parseInt(recu) || 0; const monnaie = recuNum - totalLines; const BILLS = [500, 1000, 2000, 5000, 10000, 25000];
+  const ajouterLigne = () => { if(!montantNum || montantNum < 1) { flashMsg("Entrez un montant"); return; } const nom = label.trim() || `Vente ${fmtPrice(montantNum)}`; setLines([...lines, { id: Date.now()+Math.random(), label: nom, montant: montantNum }]); setMontant(""); setLabel(""); };
+  const supprimerLigne = (id) => setLines(lines.filter(l=>l.id!==id)); const reset = () => { setLines([]); setMontant(""); setLabel(""); setModeMonnaie(false); setRecu(""); };
+  const valider = (print) => { if(lines.length === 0) { flashMsg("Ajoutez des lignes"); return; } const items = lines.map(l => ({ label: l.label, amount: l.montant, qty: 1 })); addSale(items, totalLines, print); reset(); };
+  const pushDigit = (d) => { if(modeMonnaie) setRecu(p => p.length >= 8 ? p : p + d); else setMontant(p => p.length >= 8 ? p : p + d); }; const del = () => { if(modeMonnaie) setRecu(p => p.slice(0,-1)); else setMontant(p => p.slice(0,-1)); };
+  return ( <div style={{height:"100%", display:"flex", flexDirection:"column"}}><div style={{flex:1, overflowY:"auto", padding:12}}><div style={{background:T.surface, borderRadius:16, padding:16, marginBottom:12, border:`2px solid ${modeMonnaie ? T.blue : (montantNum>0 ? T.accent : T.border)}`}}>{!modeMonnaie && <input placeholder="Libellé (optionnel)" value={label} onChange={e=>setLabel(e.target.value)} style={{width:"100%", background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:10, padding:10, marginBottom:10, color:T.text}} />}<div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline"}}><span style={{fontSize:11, color:T.textMute}}>{modeMonnaie ? "Montant reçu" : "Montant"}</span><span style={{fontSize:36, fontWeight:800, color:modeMonnaie ? T.blue : (montantNum>0 ? T.accent : T.textMute)}}>{modeMonnaie ? (recu ? fmtPrice(recuNum) : "—") : (montant ? fmtPrice(montantNum) : "0 F")}</span></div></div>{modeMonnaie && (<div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginBottom:12}}>{BILLS.map(b=><button key={b} onClick={()=>setRecu(String(b))} style={{background:T.surface, border:`1px solid ${T.border}`, borderRadius:12, padding:12, fontWeight:700}}>{b>=1000?(b/1000)+"k":b}</button>)}</div>)}{lines.length > 0 && (<div style={{marginBottom:12}}><div style={{fontSize:10, color:T.textMute, marginBottom:6}}>Lignes ({lines.length})</div>{lines.map((l,idx)=>(<div key={l.id} style={{background:T.surface2, borderRadius:10, padding:10, marginBottom:6, display:"flex", justifyContent:"space-between", alignItems:"center"}}><div><span style={{color:T.textMute, marginRight:8}}>{idx+1}.</span><span>{l.label}</span></div><div style={{display:"flex", alignItems:"center", gap:10}}><span style={{fontWeight:700, color:T.accent}}>{fmtPrice(l.montant)}</span>{!modeMonnaie && <button onClick={()=>supprimerLigne(l.id)} style={{background:T.btnRed.bg, border:"none", borderRadius:6, width:28, height:28, color:T.red, fontSize:16}}>×</button>}</div></div>))}<div style={{background:T.btnGreen.bg, borderRadius:12, padding:12, marginTop:6, display:"flex", justifyContent:"space-between", border:`1px solid ${T.green}`}}><span style={{fontWeight:700}}>TOTAL</span><span style={{fontSize:20, fontWeight:800, color:T.green}}>{fmtPrice(totalLines)}</span></div></div>)}{modeMonnaie && recuNum > 0 && (<div style={{background:monnaie>=0 ? T.btnGreen.bg : T.btnRed.bg, borderRadius:12, padding:16, textAlign:"center", marginBottom:12}}><div style={{fontSize:11, color:T.textMute}}>Monnaie à rendre</div><div style={{fontSize:32, fontWeight:800, color:monnaie>=0 ? T.green : T.red}}>{monnaie>=0 ? fmtPrice(monnaie) : `-${fmtPrice(Math.abs(monnaie))}`}</div></div>)}</div><div style={{padding:12, borderTop:`1px solid ${T.border}`, background:T.bg}}><div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6}}>{[7,8,9,4,5,6,1,2,3].map(d=><button key={d} onClick={()=>pushDigit(String(d))} style={{background:T.surface2, border:`1px solid ${T.border}`, borderRadius:12, height:60, fontSize:24, fontWeight:600, color:T.text}}>{d}</button>)}<button onClick={()=>pushDigit("00")} style={{background:T.surface2, border:`1px solid ${T.border}`, borderRadius:12, height:60, fontSize:18}}>00</button><button onClick={()=>pushDigit("0")} style={{background:T.surface2, border:`1px solid ${T.border}`, borderRadius:12, height:60, fontSize:24}}>0</button><button onClick={del} style={{background:T.btnRed.bg, border:`1px solid ${T.btnRed.border}`, borderRadius:12, height:60, fontSize:20, color:T.red}}>⌫</button></div>{!modeMonnaie ? (<div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:10}}><button onClick={reset} style={{background:"transparent", border:`1px solid ${T.btnRed.border}`, borderRadius:12, padding:12, color:T.red, fontWeight:600}}>✕ Annuler</button><button onClick={ajouterLigne} style={{background:T.btnBlue.bg, border:`1px solid ${T.btnBlue.border}`, borderRadius:12, padding:12, color:T.blue, fontWeight:700}}>➕ Ajouter ligne</button><button onClick={()=>{ if(lines.length) setModeMonnaie(true); else flashMsg("Ajoutez des lignes d'abord"); }} style={{background:T.surface2, border:`1px solid ${T.border}`, borderRadius:12, padding:12, fontWeight:600}}>💵 Monnaie</button><button onClick={()=>valider(true)} style={{background:T.btnGreen.bg, border:`2px solid ${T.green}`, borderRadius:12, padding:12, color:T.green, fontWeight:800}}>🖨️ Valider</button></div>) : (<div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:10}}><button onClick={()=>{ setModeMonnaie(false); setRecu(""); }} style={{background:T.surface2, border:`1px solid ${T.border}`, borderRadius:12, padding:12}}>← Retour</button><button onClick={()=>valider(false)} style={{background:T.btnBlue.bg, border:`1px solid ${T.btnBlue.border}`, borderRadius:12, padding:12, color:T.blue, fontWeight:600}}>✅ Sans ticket</button><button onClick={()=>valider(true)} style={{background:T.btnGreen.bg, border:`2px solid ${T.green}`, borderRadius:12, padding:12, color:T.green, fontWeight:800}}>🖨️ Imprimer</button></div>)}</div></div> );
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  APP AUTH
+// ══════════════════════════════════════════════════════════════════
+function App() {
+  const [themeName, setThemeName] = useState(()=>localStorage.getItem("pos_theme")||"dark"); const T = THEMES[themeName];
+  const [session, setSession] = useState(null); const [authMode, setAuthMode] = useState("login"); const [authShopName, setAuthShopName] = useState(""); const [authOwnerName, setAuthOwnerName] = useState(""); const [authWhatsapp, setAuthWhatsapp] = useState(""); const [authPhone, setAuthPhone] = useState(""); const [authPassword, setAuthPassword] = useState(""); const [authConfirm, setAuthConfirm] = useState(""); const [authError, setAuthError] = useState(""); const [authLoading, setAuthLoading] = useState(false); const [flash, setFlash] = useState(null); const [devMode, setDevMode] = useState(false); const [devPin, setDevPin] = useState(""); const [devPinError, setDevPinError] = useState(false); const [devPinShake, setDevPinShake] = useState(false); const clickCountRef = useRef({ count: 0, timer: null });
+  const flashMsg = (msg) => { setFlash(msg); setTimeout(()=>setFlash(null),2500); };
+  useEffect(()=>{ document.body.style.background = T.bg; localStorage.setItem("pos_theme", themeName); }, [themeName]);
+  const handleLogoTripleClick = () => { const ref = clickCountRef.current; ref.count++; clearTimeout(ref.timer); if (ref.count >= 3) { ref.count = 0; setDevMode(true); setDevPin(""); setDevPinError(false); } ref.timer = setTimeout(() => { ref.count = 0; }, 500); };
+  const verifyDevPin = () => { if (devPin === DEV_PIN) { setDevMode(false); setDevPin(""); setSession({ shopId: "dev_dashboard", shopName: "Développeur", ownerName: "Admin", isDev: true }); } else { setDevPinError(true); setDevPinShake(true); setTimeout(() => { setDevPinShake(false); setDevPin(""); setDevPinError(false); }, 700); } };
+  const handleRegister = async () => { if(!authShopName.trim() || !authOwnerName.trim() || !authWhatsapp.trim() || authPassword.length<4 || authPassword!==authConfirm) { setAuthError("Vérifiez les champs"); return; } setAuthLoading(true); try { const existing = await db.collection("shops").where("shopName", "==", authShopName.trim()).get(); if(!existing.empty) throw new Error("Nom déjà utilisé"); const shopId = "shop_"+Date.now()+"_"+Math.random().toString(36).slice(2,6); const now = Date.now(); await db.collection("shops").doc(shopId).set({ shopName: authShopName.trim(), ownerName: authOwnerName.trim(), whatsapp: authWhatsapp.trim(), phone: authPhone.trim(), password: btoa(authPassword), createdAt: now, active: true, plan: "mensuel", subscriptionStart: now, subscriptionEnd: calculateEndDate(now, "mensuel"), adminPin: btoa("0000") }); await db.collection("shops").doc(shopId).collection("products").doc("_init").set({init:true}); await db.collection("shops").doc(shopId).collection("sales").doc("_init").set({init:true}); await db.collection("shops").doc(shopId).collection("stock_movements").doc("_init").set({init:true}); await db.collection("shops").doc(shopId).collection("expenses").doc("_init").set({init:true}); flashMsg("Commerce créé ! Connectez-vous"); setAuthMode("login"); } catch(e) { setAuthError(e.message); } setAuthLoading(false); };
+  const handleLogin = async () => { if(!authShopName.trim() || !authPassword) { setAuthError("Nom et mot de passe requis"); return; } setAuthLoading(true); try { const query = await db.collection("shops").where("shopName", "==", authShopName.trim()).get(); if(query.empty) throw new Error("Commerce introuvable"); const doc = query.docs[0]; const data = doc.data(); if(btoa(authPassword) !== data.password) throw new Error("Mot de passe incorrect"); if(data.active === false) throw new Error("Compte désactivé"); setSession({ shopId: doc.id, shopName: data.shopName, shopPhone: data.phone || "", whatsapp: data.whatsapp, ownerName: data.ownerName, plan: data.plan || "mensuel", subscriptionEnd: data.subscriptionEnd, adminPin: data.adminPin || btoa("0000"), isDev: false }); } catch(e) { setAuthError(e.message); } setAuthLoading(false); };
+  const logout = () => setSession(null);
+  if (devMode) { return ( <div style={{minHeight:"100dvh", background:T.bg, display:"flex", alignItems:"center", justifyContent:"center", padding:20}}><div style={{maxWidth:400, width:"100%", background:T.surface, borderRadius:32, padding:32, textAlign:"center", border:`1px solid ${T.border}`}}><div style={{fontSize:48, marginBottom:16}}>🔧</div><div style={{fontFamily:"'Outfit'", fontSize:20, fontWeight:800, color:T.purple, marginBottom:8}}>Accès Développeur</div><div style={{display:"flex", gap:12, justifyContent:"center", marginBottom:24, animation: devPinShake ? "shake 0.35s ease" : "none"}}>{Array(6).fill(0).map((_,i)=><div key={i} style={{width:16,height:16,borderRadius:"50%", background: i < devPin.length ? (devPinError ? T.red : T.accent) : T.border}} />)}</div>{devPinError && <div style={{fontSize:12, color:T.red, marginBottom:16}}>✗ Code incorrect</div>}<div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10}}>{[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map((d,i)=>(<button key={i} onClick={()=>{ if(d==="⌫") setDevPin(p=>p.slice(0,-1)); else if(d!=="") setDevPin(p=>p.length<6 ? p+d : p); }} style={{background:d===""?"transparent":T.surface2, border:`1px solid ${T.border}`, borderRadius:12, height:60, fontSize:22, color:d==="⌫"?T.red:T.text}}>{d}</button>))}</div><button onClick={verifyDevPin} style={{marginTop:20, background:T.accent, border:"none", borderRadius:12, padding:12, width:"100%", fontWeight:700, color:T.bg}}>Valider</button><button onClick={()=>{setDevMode(false); setDevPin("");}} style={{marginTop:12, background:"transparent", border:"none", color:T.textMute, fontSize:12}}>← Retour</button></div></div> ); }
+  if(!session) { return ( <div style={{minHeight:"100dvh", background:T.bg, display:"flex", alignItems:"center", justifyContent:"center", padding:20}}><div style={{maxWidth:420, width:"100%", background:T.surface, borderRadius:32, padding:24, border:`1px solid ${T.border}`}}><div style={{textAlign:"center", marginBottom:24, cursor:"pointer"}} onClick={handleLogoTripleClick}><div style={{fontSize:42}}>🏪</div><div style={{fontFamily:"'Outfit'", fontSize:28, fontWeight:800, color:T.accent}}>Caisse SaaS Pro</div><div style={{fontSize:10, color:T.textMute, marginTop:4}}>Triple-clic mode développeur</div></div>{flash && <div style={{background:T.btnRed.bg, color:T.red, padding:8, borderRadius:8, marginBottom:12, textAlign:"center"}}>{flash}</div>}<div style={{display:"flex", gap:8, marginBottom:20, background:T.surface2, borderRadius:12, padding:4}}><button onClick={()=>{setAuthMode("login"); setAuthError("");}} style={{flex:1, background:authMode==="login"?T.accent:"transparent", border:"none", borderRadius:8, padding:"8px", fontWeight:700, color:authMode==="login"?T.bg:T.textSub}}>Connexion</button><button onClick={()=>{setAuthMode("register"); setAuthError("");}} style={{flex:1, background:authMode==="register"?T.accent:"transparent", border:"none", borderRadius:8, padding:"8px", fontWeight:700, color:authMode==="register"?T.bg:T.textSub}}>Créer</button></div><div style={{display:"flex", flexDirection:"column", gap:12}}><input placeholder="Nom du commerce" value={authShopName} onChange={e=>setAuthShopName(e.target.value)} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:14, padding:"14px", color:T.text}} />{authMode==="register" && (<><input placeholder="Nom du propriétaire" value={authOwnerName} onChange={e=>setAuthOwnerName(e.target.value)} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:14, padding:"14px", color:T.text}} /><input placeholder="WhatsApp" value={authWhatsapp} onChange={e=>setAuthWhatsapp(e.target.value)} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:14, padding:"14px", color:T.text}} /><input placeholder="Téléphone" value={authPhone} onChange={e=>setAuthPhone(e.target.value)} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:14, padding:"14px", color:T.text}} /></>)}<input type="password" placeholder="Mot de passe" value={authPassword} onChange={e=>setAuthPassword(e.target.value)} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:14, padding:"14px", color:T.text}} />{authMode==="register" && <input type="password" placeholder="Confirmer" value={authConfirm} onChange={e=>setAuthConfirm(e.target.value)} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:14, padding:"14px", color:T.text}} />}{authError && <div style={{fontSize:12, color:T.red, textAlign:"center"}}>{authError}</div>}<button onClick={authMode==="register"?handleRegister:handleLogin} disabled={authLoading} style={{background:T.accent, border:"none", borderRadius:16, padding:"16px", fontWeight:800, fontSize:16, color:T.bg}}>{authLoading ? "..." : (authMode==="register" ? "Créer" : "Se connecter")}</button></div></div></div> ); }
+  if(session.isDev) return <DevDashboard T={T} themeName={themeName} setThemeName={setThemeName} logout={logout} flashMsg={flashMsg} />;
+  return <MainApp session={session} T={T} themeName={themeName} setThemeName={setThemeName} logout={logout} flashMsg={flashMsg} />;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  MAIN APP AVEC BANDE D'ABONNEMENT + DÉPENSES
+// ══════════════════════════════════════════════════════════════════
+function MainApp({ session, T, themeName, setThemeName, logout, flashMsg }) {
+  const [products, setProducts] = useState(() => OfflineStore.get(session.shopId, "products") || []);
+  const [sales, setSales] = useState(() => OfflineStore.get(session.shopId, "sales") || []);
+  const [stockMovements, setStockMovements] = useState(() => OfflineStore.get(session.shopId, "stock_movements") || []);
+  const [expenses, setExpenses] = useState(() => OfflineStore.get(session.shopId, "expenses") || []);
+  const [mode, setMode] = useState("CAISSE");
+  const [items, setItems] = useState([]);
+  const [ownerMode, setOwnerMode] = useState(false);
+  const [pinModal, setPinModal] = useState(false);
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState(false);
+  const [pinShake, setPinShake] = useState(false);
+  const [useBLE, setUseBLE] = useState(true);
+
+  useEffect(() => { const unsub = syncShopData(session.shopId, setProducts, setSales, setStockMovements, setExpenses); return unsub; }, [session.shopId]);
+
+  const total = items.reduce((s,i)=>s + (i.amount || 0) * (i.qty || 1), 0);
+  
+  const updateStock = async (productId, quantity, type, reason) => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+    if (product.stock === null || product.stock === undefined || product.stock === -1) return;
+    const newStock = Math.max(0, (product.stock || 0) + quantity);
+    const updatedProducts = products.map(p => p.id === productId ? { ...p, stock: newStock } : p);
+    setProducts(updatedProducts);
+    OfflineStore.set(session.shopId, "products", updatedProducts);
+    const movement = { id: Date.now().toString(36)+Math.random().toString(36).slice(2), productId, productName: product.name, quantity, type, reason, timestamp: Date.now() };
+    setStockMovements([movement, ...stockMovements]);
+    OfflineStore.set(session.shopId, "stock_movements", [movement, ...stockMovements]);
+    if(db) { await db.collection("shops").doc(session.shopId).collection("products").doc(productId).update({ stock: newStock }); await db.collection("shops").doc(session.shopId).collection("stock_movements").doc(movement.id).set(movement); }
+  };
+
+  const addSale = async (saleItems, saleTotal, print=true) => {
+    for (const item of saleItems) { const product = products.find(p => p.id === item.productId); if (product && product.stock !== null && product.stock !== undefined && product.stock !== -1) { await updateStock(item.productId, - (item.qty || 1), "sortie", `Vente #${Date.now()}`); } }
+    const newSale = { id: Date.now().toString(36)+Math.random().toString(36).slice(2), date: new Date().toISOString().slice(0,10), timestamp: Date.now(), items: saleItems, total: saleTotal, invoiceNum: Date.now(), cancelled: false };
+    setSales([...sales, newSale]); OfflineStore.set(session.shopId, "sales", [...sales, newSale]);
+    if(db) db.collection("shops").doc(session.shopId).collection("sales").doc(newSale.id).set(newSale).catch(()=>{});
+    if(print) { try { if (useBLE && printer.connected) { await printViaBLE(session.shopName, session.shopPhone, saleItems, saleTotal, newSale.invoiceNum); flashMsg("✅ Vente + impression BLE"); } else { printFallback(session.shopName, session.shopPhone, saleItems, saleTotal, newSale.invoiceNum); flashMsg("✅ Vente + impression navigateur"); } } catch(e) { printFallback(session.shopName, session.shopPhone, saleItems, saleTotal, newSale.invoiceNum); flashMsg("✅ Vente (fallback)"); } } else { flashMsg("✅ Vente enregistrée"); }
+    setItems([]);
+  };
+
+  const addExpense = async (expense) => {
+    const newExpense = { ...expense, id: Date.now().toString(36)+Math.random().toString(36).slice(2), timestamp: Date.now() };
+    setExpenses([newExpense, ...expenses]); OfflineStore.set(session.shopId, "expenses", [newExpense, ...expenses]);
+    if(db) db.collection("shops").doc(session.shopId).collection("expenses").doc(newExpense.id).set(newExpense);
+    flashMsg(`Dépense enregistrée: ${expense.label} - ${fmtPrice(expense.amount)}`);
+  };
+
+  const cancelSale = (saleId, raison) => {
+    const sale = sales.find(s => s.id === saleId);
+    if (sale && !sale.cancelled) { for (const item of sale.items) { if (item.productId) updateStock(item.productId, item.qty || 1, "entree", `Annulation vente #${sale.invoiceNum}`); } }
+    const updated = sales.map(s => s.id===saleId ? {...s, cancelled:true, cancelRaison:raison, cancelledAt:Date.now()} : s);
+    setSales(updated); OfflineStore.set(session.shopId, "sales", updated);
+    if(db) db.collection("shops").doc(session.shopId).collection("sales").doc(saleId).update({cancelled:true, cancelRaison:raison, cancelledAt:Date.now()}).catch(()=>{});
+    flashMsg(`🗑️ Vente annulée : ${raison}`);
+  };
+
+  const verifyAdminPin = () => { const expectedPin = atob(session.adminPin || btoa("0000")); if (pinInput === expectedPin) { setPinModal(false); setPinInput(""); setOwnerMode(true); } else { setPinError(true); setPinShake(true); setTimeout(() => { setPinShake(false); setPinInput(""); setPinError(false); }, 700); } };
+  const enterOwnerMode = () => { setPinModal(true); setPinInput(""); setPinError(false); };
+  const exitOwnerMode = () => { setOwnerMode(false); };
+  const updateAdminPin = async (newPin) => { const newEncoded = btoa(newPin); await db.collection("shops").doc(session.shopId).update({ adminPin: newEncoded }); session.adminPin = newEncoded; flashMsg("PIN administrateur modifié"); };
+
+  return (
+    <div style={{height:"100dvh", background:T.bg, display:"flex", flexDirection:"column"}}>
+      <SubscriptionBanner T={T} shopId={session.shopId} />
+      {pinModal && (<div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.95)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:2000}}><div style={{background:T.surface, borderRadius:32, padding:24, width:"90%", maxWidth:360, textAlign:"center"}}><div style={{fontSize:48, marginBottom:12}}>👑</div><div style={{fontSize:18, fontWeight:800, marginBottom:8}}>Accès Administrateur</div><div style={{fontSize:12, color:T.textMute, marginBottom:20}}>Entrez votre code PIN à 4 chiffres</div><div style={{display:"flex", gap:12, justifyContent:"center", marginBottom:20, animation: pinShake ? "shake 0.35s ease" : "none"}}>{Array(4).fill(0).map((_,i)=><div key={i} style={{width:16,height:16,borderRadius:"50%", background: i < pinInput.length ? (pinError ? T.red : T.accent) : T.border}} />)}</div>{pinError && <div style={{fontSize:12, color:T.red, marginBottom:16}}>✗ Code incorrect</div>}<div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8}}>{[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map((d,i)=>(<button key={i} onClick={()=>{ if(d==="⌫") setPinInput(p=>p.slice(0,-1)); else if(d!=="") setPinInput(p=>p.length<4 ? p+d : p); }} style={{background:d===""?"transparent":T.surface2, border:`1px solid ${T.border}`, borderRadius:12, height:55, fontSize:22, color:d==="⌫"?T.red:T.text}}>{d}</button>))}</div><button onClick={verifyAdminPin} style={{marginTop:16, background:T.accent, border:"none", borderRadius:12, padding:12, width:"100%", fontWeight:700, color:T.bg}}>Valider</button><button onClick={()=>{setPinModal(false); setPinInput("");}} style={{marginTop:8, background:"transparent", border:"none", color:T.textMute}}>Annuler</button></div></div>)}
+      <div style={{background:T.header, padding:"8px 12px", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0}}><div><div style={{fontSize:10, color:T.textMute}}>{session.shopName}</div><div style={{fontFamily:"'Outfit'", fontWeight:800, color:T.accent}}>Caisse Pro</div></div><div style={{display:"flex", gap:8}}><div style={{display:"flex", gap:4, background:T.surface2, borderRadius:20, padding:4}}>{Object.values(THEMES).map(t=><button key={t.id} onClick={()=>setThemeName(t.id)} style={{background:themeName===t.id?T.accent:"transparent", border:"none", borderRadius:16, width:28, height:28}}>{t.label}</button>)}</div><button onClick={()=>setMode("CAISSE")} style={{background:mode==="CAISSE"?T.accent:"transparent", border:"none", borderRadius:8, padding:"6px 12px", fontWeight:700, color:mode==="CAISSE"?T.bg:T.textSub}}>🛒 Caisse</button>{!ownerMode ? (<button onClick={enterOwnerMode} style={{background:T.btnBlue.bg, border:"none", borderRadius:8, padding:"6px 12px", fontWeight:700, color:T.blue}}>👑 Admin</button>) : (<button onClick={exitOwnerMode} style={{background:T.btnRed.bg, border:"none", borderRadius:8, padding:"6px 12px", fontWeight:700, color:T.red}}>🔒 Quitter Admin</button>)}<button onClick={logout} style={{background:"transparent", border:`1px solid ${T.border}`, borderRadius:8, padding:"4px 8px", fontSize:11}}>Déco</button></div></div>
+      {mode === "CAISSE" && (<div className="desktop-grid" style={{flex:1, overflow:"hidden"}}><div className="desktop-main" style={{flex:1, overflowY:"auto", padding:12}}><BLEStatus T={T} /><div style={{display:"flex", gap:6, marginBottom:12}}><button onClick={()=>setUseBLE(true)} style={{flex:1, background:useBLE?T.accent:T.surface, borderRadius:12, padding:6, fontSize:11, fontWeight:600, color:useBLE?T.bg:T.text}}>🖨️ BLE 80mm</button><button onClick={()=>setUseBLE(false)} style={{flex:1, background:!useBLE?T.accent:T.surface, borderRadius:12, padding:6, fontSize:11, fontWeight:600, color:!useBLE?T.bg:T.text}}>🖥️ Navigateur</button></div><CaisseContent T={T} products={products} addSale={addSale} items={items} setItems={setItems} total={total} flashMsg={flashMsg} sales={sales} cancelSale={cancelSale} /></div><div className="desktop-sidebar" style={{width:340, background:T.surface, borderLeft:`1px solid ${T.border}`, display:"flex", flexDirection:"column"}}><PanierContent T={T} items={items} setItems={setItems} total={total} addSale={addSale} flashMsg={flashMsg} useBLE={useBLE} /></div></div>)}
+      {ownerMode && (<OwnerContent T={T} shopName={session.shopName} whatsapp={session.whatsapp} products={products} setProducts={setProducts} sales={sales} flashMsg={flashMsg} shopId={session.shopId} stockMovements={stockMovements} updateStock={updateStock} updateAdminPin={updateAdminPin} expenses={expenses} addExpense={addExpense} />)}
+    </div>
+  );
+}
+
+function CaisseContent({ T, products, addSale, items, setItems, total, flashMsg, sales, cancelSale }) {
+  const [view, setView] = useState("catalog"); const [search, setSearch] = useState(""); const [manualLabel, setManualLabel] = useState(""); const [manualAmount, setManualAmount] = useState(""); const [cancelModal, setCancelModal] = useState(null); const [cancelRaison, setCancelRaison] = useState("");
+  const filtered = (products || []).filter(p => p && p.active !== false && p.name && p.name.toLowerCase().includes(search.toLowerCase()));
+  const todaySales = (sales || []).filter(s => s.date === new Date().toISOString().slice(0,10) && !s.cancelled);
+  const addProduct = (p) => { if (p.stock !== undefined && p.stock !== null && p.stock !== -1 && p.stock <= 0) { flashMsg(`⚠️ ${p.name} en rupture`); return; } const exist = items.find(i=>i.productId===p.id); if(exist) setItems(items.map(i=>i.productId===p.id?{...i, qty:(i.qty||1)+1}:i)); else setItems([...items, {id:Date.now()+Math.random(), productId:p.id, label:p.name, amount:p.price, qty:1}]); };
+  const addManual = () => { if(!manualLabel.trim() || !manualAmount) { flashMsg("Nom et montant requis"); return; } setItems([...items, {id:Date.now()+Math.random(), label:manualLabel.trim(), amount:parseInt(manualAmount), qty:1}]); setManualLabel(""); setManualAmount(""); };
+  return (<><div style={{display:"flex", gap:6, marginBottom:12}}><button onClick={()=>setView("catalog")} style={{flex:1, background:view==="catalog"?T.accent:T.surface, borderRadius:12, padding:8, fontWeight:600, color:view==="catalog"?T.bg:T.text}}>📦 Catalogue</button><button onClick={()=>setView("manual")} style={{flex:1, background:view==="manual"?T.accent:T.surface, borderRadius:12, padding:8, fontWeight:600, color:view==="manual"?T.bg:T.text}}>✏️ Manuel</button><button onClick={()=>setView("rapide")} style={{flex:1, background:view==="rapide"?T.accent:T.surface, borderRadius:12, padding:8, fontWeight:600, color:view==="rapide"?T.bg:T.text}}>⚡ Rapide</button><button onClick={()=>setView("annulations")} style={{flex:1, background:view==="annulations"?T.red:T.surface, borderRadius:12, padding:8, fontWeight:600, color:view==="annulations"?T.bg:T.text}}>🗑️ Annul.</button></div>{view === "catalog" && (<><input placeholder="🔍 Rechercher..." value={search} onChange={e=>setSearch(e.target.value)} style={{width:"100%", background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:12, padding:10, marginBottom:12, color:T.text}} /><div className="product-grid" style={{display:"grid", gap:8}}>{filtered.map(p => (<button key={p.id} onClick={()=>addProduct(p)} style={{background:T.surface, border:`1px solid ${T.border}`, borderRadius:12, padding:10, textAlign:"left"}}><div style={{fontWeight:600}}>{p.name}</div><div style={{fontSize:11, color:T.accent}}>{fmtPrice(p.price)}</div>{p.stock !== undefined && p.stock !== null && p.stock !== -1 && <div style={{fontSize:9, color:p.stock<=5?T.red:T.textMute}}>Stock: {p.stock}</div>}{p.stock === -1 && <div style={{fontSize:9, color:T.textMute}}>♾️ Illimité</div>}</button>))}</div></>)}{view === "manual" && (<div style={{background:T.surface, borderRadius:16, padding:16}}><input placeholder="Nom article" value={manualLabel} onChange={e=>setManualLabel(e.target.value)} style={{width:"100%", background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:12, padding:10, marginBottom:8, color:T.text}} /><input placeholder="Montant (F)" value={manualAmount} onChange={e=>setManualAmount(e.target.value.replace(/\D/g,""))} style={{width:"100%", background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:12, padding:10, marginBottom:12, color:T.text}} /><button onClick={addManual} style={{background:T.accent, border:"none", borderRadius:12, padding:12, fontWeight:700, width:"100%", color:T.bg}}>➕ Ajouter</button></div>)}{view === "rapide" && <VenteRapide T={T} addSale={addSale} flashMsg={flashMsg} />}{view === "annulations" && (<div>{todaySales.length===0 ? <div style={{textAlign:"center", padding:40, color:T.textMute}}>Aucune vente aujourd'hui</div> : todaySales.map(s=>(<div key={s.id} style={{background:T.surface, borderRadius:12, padding:12, marginBottom:8}}><div style={{display:"flex", justifyContent:"space-between"}}><span>{new Date(s.timestamp).toLocaleTimeString()}</span><span>{fmtPrice(s.total)}</span></div><button onClick={()=>setCancelModal(s)} style={{marginTop:8, background:T.btnRed.bg, border:"none", borderRadius:8, padding:"6px", width:"100%", color:T.red}}>🗑️ Annuler</button></div>))}</div>)}{cancelModal && (<div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.9)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000}}><div style={{background:T.surface, borderRadius:24, padding:20, width:"90%", maxWidth:360}}><div style={{fontSize:18, fontWeight:800, color:T.red}}>Annuler la vente</div><textarea placeholder="Motif de l'annulation (obligatoire)" value={cancelRaison} onChange={e=>setCancelRaison(e.target.value)} rows="3" style={{width:"100%", background:T.inputBg, borderRadius:12, padding:12, margin:"12px 0", color:T.text}} /><div style={{display:"flex", gap:8}}><button onClick={()=>{setCancelModal(null); setCancelRaison("");}} style={{flex:1, background:T.surface2, borderRadius:12, padding:12}}>Retour</button><button onClick={()=>{ if(cancelRaison.trim()){ cancelSale(cancelModal.id, cancelRaison); setCancelModal(null); setCancelRaison(""); } else flashMsg("Motif requis"); }} style={{flex:1, background:T.red, borderRadius:12, padding:12, color:"white"}}>Confirmer</button></div></div></div>)}</>);
+}
+
+function PanierContent({ T, items, setItems, total, addSale, flashMsg, useBLE }) {
+  const updateQty = (id, delta) => setItems(items.map(i=>i.id===id?{...i, qty:Math.max(1,(i.qty||1)+delta)}:i));
+  const removeItem = (id) => setItems(items.filter(i=>i.id!==id));
+  const clearCart = () => { if(confirm("Annuler toute la vente ?")) setItems([]); };
+  const cartTotal = items.reduce((s,i)=>s+(i.qty||1),0);
+  return (<><div style={{padding:12, borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between"}}><span>🛒 Panier ({cartTotal})</span><button onClick={clearCart} style={{background:"transparent", border:"none", color:T.red}}>Tout annuler</button></div><div style={{flex:1, overflowY:"auto", padding:8}}>{items.map(it=>(<div key={it.id} style={{background:T.surface2, borderRadius:10, padding:8, marginBottom:6}}><div style={{display:"flex", justifyContent:"space-between"}}><span>{it.label}</span><span>{fmtPrice(it.amount*it.qty)}</span></div><div style={{display:"flex", justifyContent:"space-between", marginTop:4}}><div><button onClick={()=>updateQty(it.id,-1)} style={{background:T.bg, border:"none", width:26, borderRadius:5}}>-</button> {it.qty} <button onClick={()=>updateQty(it.id,1)} style={{background:T.bg, border:"none", width:26, borderRadius:5}}>+</button></div><button onClick={()=>removeItem(it.id)} style={{background:"transparent", border:"none", color:T.red}}>🗑️</button></div></div>))}</div><div style={{padding:12, borderTop:`1px solid ${T.border}`}}><div style={{display:"flex", justifyContent:"space-between", marginBottom:8, fontSize:18, fontWeight:800}}><span>TOTAL</span><span>{fmtPrice(total)}</span></div><button onClick={()=>{ if(items.length) addSale(items, total, true); else flashMsg("Panier vide"); }} style={{width:"100%", background:T.green, border:"none", borderRadius:12, padding:12, fontWeight:700, color:T.bg}}>{useBLE ? "🖨️ BLE + Valider" : "🖥️ Imprimer + Valider"}</button><button onClick={()=>{ if(items.length) addSale(items, total, false); else flashMsg("Panier vide"); }} style={{marginTop:8, width:"100%", background:T.blue, border:"none", borderRadius:12, padding:12, fontWeight:700, color:T.bg}}>✅ Valider sans ticket</button></div></>);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  GESTION DES DÉPENSES + BÉNÉFICES
+// ══════════════════════════════════════════════════════════════════
+function OwnerContent({ T, shopName, whatsapp, products, setProducts, sales, flashMsg, shopId, stockMovements, updateStock, updateAdminPin, expenses, addExpense }) {
+  const [tab, setTab] = useState("dashboard");
+  const [showForm, setShowForm] = useState(false);
+  const [editProd, setEditProd] = useState(null);
+  const [pName, setPName] = useState("");
+  const [pPrice, setPPrice] = useState("");
+  const [pStock, setPStock] = useState("");
+  const [pStockUnlimited, setPStockUnlimited] = useState(false);
+  const [showPinForm, setShowPinForm] = useState(false);
+  const [newPin, setNewPin] = useState("");
+  const [newPinConfirm, setNewPinConfirm] = useState("");
+  const [expenseLabel, setExpenseLabel] = useState("");
+  const [expenseAmount, setExpenseAmount] = useState("");
+  const [expenseCategory, setExpenseCategory] = useState("Frais généraux");
+  
+  const today = new Date().toISOString().slice(0,10);
+  const currentMonth = new Date().toISOString().slice(0,7);
+  const currentYear = new Date().toISOString().slice(0,4);
+  
+  const todaySales = (sales || []).filter(s => s.date === today && !s.cancelled);
+  const monthSales = (sales || []).filter(s => s.date?.startsWith(currentMonth) && !s.cancelled);
+  const yearSales = (sales || []).filter(s => s.date?.startsWith(currentYear) && !s.cancelled);
+  
+  const revenueToday = todaySales.reduce((a,b)=>a+(b.total||0),0);
+  const revenueMonth = monthSales.reduce((a,b)=>a+(b.total||0),0);
+  const revenueYear = yearSales.reduce((a,b)=>a+(b.total||0),0);
+  
+  const todayExpenses = (expenses || []).filter(e => getDateKey(e.timestamp) === today);
+  const monthExpenses = (expenses || []).filter(e => getMonthKey(e.timestamp) === currentMonth);
+  const yearExpenses = (expenses || []).filter(e => getYearKey(e.timestamp) === currentYear);
+  
+  const expensesToday = todayExpenses.reduce((a,b)=>a+(b.amount||0),0);
+  const expensesMonth = monthExpenses.reduce((a,b)=>a+(b.amount||0),0);
+  const expensesYear = yearExpenses.reduce((a,b)=>a+(b.amount||0),0);
+  
+  const profitToday = revenueToday - expensesToday;
+  const profitMonth = revenueMonth - expensesMonth;
+  const profitYear = revenueYear - expensesYear;
+  
+  const addOrUpdate = () => { if(!pName.trim()) { flashMsg("Nom requis"); return; } const price = parseInt(pPrice); if(!price) { flashMsg("Prix invalide"); return; } const stock = pStockUnlimited ? -1 : (parseInt(pStock) || 0); if(editProd) { const updated = products.map(p=>p.id===editProd.id?{...p, name:pName.trim(), price, stock}:p); setProducts(updated); OfflineStore.set(shopId, "products", updated); if(db) db.collection("shops").doc(shopId).collection("products").doc(editProd.id).update({name:pName.trim(), price, stock}); flashMsg("Produit modifié"); } else { const newProd = { id: Date.now().toString(36)+Math.random().toString(36).slice(2), name:pName.trim(), price, stock, active:true }; setProducts([...products, newProd]); OfflineStore.set(shopId, "products", [...products, newProd]); if(db) db.collection("shops").doc(shopId).collection("products").doc(newProd.id).set(newProd); flashMsg("Produit ajouté"); } setShowForm(false); };
+  const deleteProd = (p) => { if(confirm(`Supprimer ${p.name} ?`)) { setProducts(products.filter(pr=>pr.id!==p.id)); OfflineStore.set(shopId, "products", products.filter(pr=>pr.id!==p.id)); if(db) db.collection("shops").doc(shopId).collection("products").doc(p.id).delete(); flashMsg("Produit supprimé"); } };
+  const handlePinChange = () => { if(newPin.length !== 4) { flashMsg("Le PIN doit contenir 4 chiffres"); return; } if(newPin !== newPinConfirm) { flashMsg("Les PIN ne correspondent pas"); return; } updateAdminPin(newPin); setShowPinForm(false); setNewPin(""); setNewPinConfirm(""); };
+  const handleAddExpense = () => { if(!expenseLabel.trim() || !expenseAmount) { flashMsg("Libellé et montant requis"); return; } addExpense({ label: expenseLabel.trim(), amount: parseInt(expenseAmount), category: expenseCategory }); setExpenseLabel(""); setExpenseAmount(""); setExpenseCategory("Frais généraux"); };
+  const lowStock = products.filter(p=>p.stock !== undefined && p.stock !== null && p.stock !== -1 && p.stock <= 5).length;
+  
+  return (<div style={{flex:1, overflowY:"auto", padding:12}}><div style={{display:"flex", gap:8, marginBottom:16, flexWrap:"wrap"}}><button onClick={()=>setTab("dashboard")} style={{background:tab==="dashboard"?T.accent:T.surface, borderRadius:12, padding:"8px 16px"}}>📊 Tableau de bord</button><button onClick={()=>setTab("expenses")} style={{background:tab==="expenses"?T.accent:T.surface, borderRadius:12, padding:"8px 16px"}}>💰 Dépenses</button><button onClick={()=>setTab("products")} style={{background:tab==="products"?T.accent:T.surface, borderRadius:12, padding:"8px 16px"}}>📦 Produits</button><button onClick={()=>setTab("stock")} style={{background:tab==="stock"?T.accent:T.surface, borderRadius:12, padding:"8px 16px"}}>📊 Stock</button><button onClick={()=>setTab("sales")} style={{background:tab==="sales"?T.accent:T.surface, borderRadius:12, padding:"8px 16px"}}>🧾 Ventes</button><button onClick={()=>setTab("settings")} style={{background:tab==="settings"?T.accent:T.surface, borderRadius:12, padding:"8px 16px"}}>⚙️ Paramètres</button></div>
+    
+    {tab === "dashboard" && (<div><div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(280px,1fr))", gap:12, marginBottom:16}}><div style={{background:T.surface, borderRadius:20, padding:16}}><div style={{fontSize:12, color:T.textMute}}>📅 AUJOURD'HUI</div><div style={{marginTop:8}}><div style={{display:"flex", justifyContent:"space-between"}}><span>💰 Chiffre d'affaires</span><span style={{color:T.green}}>{fmtPrice(revenueToday)}</span></div><div style={{display:"flex", justifyContent:"space-between", marginTop:4}}><span>📉 Dépenses</span><span style={{color:T.red}}>{fmtPrice(expensesToday)}</span></div><div style={{display:"flex", justifyContent:"space-between", marginTop:8, paddingTop:8, borderTop:`1px solid ${T.border}`, fontWeight:700}}><span>📈 Bénéfice</span><span style={{color:profitToday>=0?T.green:T.red}}>{fmtPrice(profitToday)}</span></div></div></div><div style={{background:T.surface, borderRadius:20, padding:16}}><div style={{fontSize:12, color:T.textMute}}>📆 MOIS ({currentMonth})</div><div style={{marginTop:8}}><div style={{display:"flex", justifyContent:"space-between"}}><span>💰 Chiffre d'affaires</span><span style={{color:T.green}}>{fmtPrice(revenueMonth)}</span></div><div style={{display:"flex", justifyContent:"space-between", marginTop:4}}><span>📉 Dépenses</span><span style={{color:T.red}}>{fmtPrice(expensesMonth)}</span></div><div style={{display:"flex", justifyContent:"space-between", marginTop:8, paddingTop:8, borderTop:`1px solid ${T.border}`, fontWeight:700}}><span>📈 Bénéfice</span><span style={{color:profitMonth>=0?T.green:T.red}}>{fmtPrice(profitMonth)}</span></div></div></div><div style={{background:T.surface, borderRadius:20, padding:16}}><div style={{fontSize:12, color:T.textMute}}>🗓️ ANNÉE ({currentYear})</div><div style={{marginTop:8}}><div style={{display:"flex", justifyContent:"space-between"}}><span>💰 Chiffre d'affaires</span><span style={{color:T.green}}>{fmtPrice(revenueYear)}</span></div><div style={{display:"flex", justifyContent:"space-between", marginTop:4}}><span>📉 Dépenses</span><span style={{color:T.red}}>{fmtPrice(expensesYear)}</span></div><div style={{display:"flex", justifyContent:"space-between", marginTop:8, paddingTop:8, borderTop:`1px solid ${T.border}`, fontWeight:700}}><span>📈 Bénéfice</span><span style={{color:profitYear>=0?T.green:T.red}}>{fmtPrice(profitYear)}</span></div></div></div></div><div style={{background:T.surface, borderRadius:16, padding:16}}><div style={{fontWeight:700, marginBottom:12}}>📊 Résumé des ventes</div><div style={{display:"flex", justifyContent:"space-between"}}><div><div style={{fontSize:11, color:T.textMute}}>Ventes aujourd'hui</div><div style={{fontSize:24, fontWeight:800}}>{todaySales.filter(s=>!s.cancelled).length}</div></div><div><div style={{fontSize:11, color:T.textMute}}>Stock bas</div><div style={{fontSize:24, fontWeight:800, color:T.orange}}>{lowStock}</div></div><div><div style={{fontSize:11, color:T.textMute}}>Dépenses mois</div><div style={{fontSize:24, fontWeight:800, color:T.red}}>{fmtPrice(expensesMonth)}</div></div></div></div></div>)}
+    
+    {tab === "expenses" && (<div><div style={{background:T.surface, borderRadius:16, padding:16, marginBottom:16}}><div style={{fontWeight:700, marginBottom:12}}>➕ Ajouter une dépense</div><div style={{display:"flex", flexDirection:"column", gap:8}}><input placeholder="Libellé (ex: Loyer, Électricité, Stock...)" value={expenseLabel} onChange={e=>setExpenseLabel(e.target.value)} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:12, padding:12, color:T.text}} /><input placeholder="Montant (F)" value={expenseAmount} onChange={e=>setExpenseAmount(e.target.value.replace(/\D/g,""))} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:12, padding:12, color:T.text}} /><select value={expenseCategory} onChange={e=>setExpenseCategory(e.target.value)} style={{background:T.inputBg, border:`1px solid ${T.inputBd}`, borderRadius:12, padding:12, color:T.text}}><option>Frais généraux</option><option>Loyer</option><option>Électricité/Eau</option><option>Salaires</option><option>Achats stock</option><option>Marketing</option><option>Entretien</option><option>Autre</option></select><button onClick={handleAddExpense} style={{background:T.accent, border:"none", borderRadius:12, padding:12, fontWeight:700, color:T.bg}}>💸 Enregistrer la dépense</button></div></div><div><div style={{fontWeight:700, marginBottom:8}}>📋 Historique des dépenses</div>{(expenses || []).sort((a,b)=>b.timestamp - a.timestamp).map(e=>(<div key={e.id} style={{background:T.surface, borderRadius:12, padding:12, marginBottom:8, borderLeft:`4px solid ${T.red}`}}><div style={{display:"flex", justifyContent:"space-between"}}><span style={{fontWeight:600}}>{e.label}</span><span style={{color:T.red}}>{fmtPrice(e.amount)}</span></div><div style={{display:"flex", justifyContent:"space-between", marginTop:4, fontSize:11, color:T.textMute}}><span>{e.category}</span><span>{formatDateTime(e.timestamp)}</span></div></div>))}</div></div>)}
+    
+    {tab === "products" && (<><button onClick={()=>{setEditProd(null); setPName(""); setPPrice(""); setPStock(""); setPStockUnlimited(false); setShowForm(true);}} style={{background:T.green, border:"none", borderRadius:12, padding:12, marginBottom:12, width:"100%", fontWeight:700, color:T.bg}}>+ Nouveau produit</button>{products.map(p=>(<div key={p.id} style={{background:T.surface, borderRadius:12, padding:12, marginBottom:8, display:"flex", justifyContent:"space-between", alignItems:"center"}}><div><div>{p.name}</div><div style={{fontSize:11, color:T.accent}}>{fmtPrice(p.price)}</div><div style={{fontSize:10}}>{p.stock===undefined||p.stock===null||p.stock===-1 ? "♾️ Illimité" : `Stock: ${p.stock}`}</div></div><div><button onClick={()=>{setEditProd(p); setPName(p.name); setPPrice(String(p.price)); setPStock(p.stock===undefined||p.stock===null||p.stock===-1 ? "" : String(p.stock)); setPStockUnlimited(p.stock===undefined||p.stock===null||p.stock===-1); setShowForm(true);}} style={{background:T.btnBlue.bg, border:"none", borderRadius:8, padding:"4px 10px", marginRight:6}}>✏️</button><button onClick={()=>deleteProd(p)} style={{background:T.btnRed.bg, border:"none", borderRadius:8, padding:"4px 10px"}}>🗑️</button></div></div>))}</>)}
+    
+    {tab === "stock" && (<div><div style={{marginBottom:16}}><div style={{fontSize:12, fontWeight:600, marginBottom:8}}>📦 Produits</div>{products.filter(p=>p.active!==false).map(p=>(<div key={p.id} style={{background:T.surface, borderRadius:12, padding:12, marginBottom:8}}><div style={{display:"flex", justifyContent:"space-between"}}><span>{p.name}</span><span>{fmtPrice(p.price)}</span></div><div style={{marginTop:6, display:"flex", justifyContent:"space-between", alignItems:"center"}}><span style={{color:p.stock===undefined||p.stock===null||p.stock===-1?T.textMute:(p.stock<=5?T.red:T.green)}}>{p.stock===undefined||p.stock===null||p.stock===-1 ? "♾️ Illimité" : `Stock: ${p.stock}`}</span>{p.stock!==undefined && p.stock!==null && p.stock!==-1 && (<button onClick={()=>{ const qty=prompt("Quantité à ajouter/retirer (positif=ajout, négatif=retrait):"); if(qty){ const num=parseInt(qty); if(num!==0) updateStock(p.id, num, num>0?"entree":"sortie", "Ajustement manuel"); } }} style={{background:T.btnGreen.bg, border:"none", borderRadius:8, padding:"4px 10px", fontSize:10}}>Ajuster</button>)}</div></div>))}</div><div><div style={{fontSize:12, fontWeight:600, marginBottom:8}}>📋 Mouvements récents</div>{stockMovements.slice(0,15).map(m=>(<div key={m.id} style={{background:T.surface2, borderRadius:8, padding:8, marginBottom:6, fontSize:11}}><div style={{display:"flex", justifyContent:"space-between"}}><span>{m.productName}</span><span style={{color:m.type==="entree"?T.green:T.red}}>{m.type==="entree"?`+${m.quantity}`:`-${Math.abs(m.quantity)}`}</span></div><div style={{fontSize:9, color:T.textMute}}>{m.reason} · {new Date(m.timestamp).toLocaleTimeString()}</div></div>))}</div></div>)}
+    
+    {tab === "sales" && ((sales || []).sort((a,b)=>b.timestamp - a.timestamp).map(s=>(<div key={s.id} style={{background:s.cancelled?T.btnRed.bg:T.surface, borderRadius:12, padding:12, marginBottom:8, borderLeft:`4px solid ${s.cancelled?T.red:T.green}`}}><div style={{display:"flex", justifyContent:"space-between"}}><span>{new Date(s.timestamp).toLocaleTimeString()}</span><span>{fmtPrice(s.total)}</span></div>{(s.items || []).slice(0,2).map((it,i)=><div key={i} style={{fontSize:11}}>• {it.label} x{it.qty}</div>)}{s.cancelled && <div style={{fontSize:10, color:T.red, marginTop:4}}>❌ ANNULÉ : {s.cancelRaison}</div>}</div>)))}
+    
+    {tab === "settings" && (<div style={{background:T.surface, borderRadius:16, padding:16}}><div style={{fontSize:16, fontWeight:700, marginBottom:12}}>⚙️ Paramètres de sécurité</div><button onClick={()=>setShowPinForm(true)} style={{background:T.btnBlue.bg, border:"none", borderRadius:12, padding:12, width:"100%", fontWeight:600, color:T.blue}}>🔐 Changer le PIN administrateur</button><div style={{marginTop:16, padding:12, background:T.surface2, borderRadius:12}}><div style={{fontSize:12, color:T.textMute}}>WhatsApp de contact</div><div style={{fontWeight:600}}>{whatsapp}</div><button onClick={()=>window.open(`https://wa.me/${whatsapp?.replace(/\D/g,"")}?text=${encodeURIComponent(`Rapport ${shopName}`)}`, "_blank")} style={{marginTop:8, background:T.accent, border:"none", borderRadius:8, padding:"6px", fontSize:11}}>📱 Envoyer rapport</button></div></div>)}
+    
+    {showForm && (<div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.9)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000}}><div style={{background:T.surface, borderRadius:24, padding:20, width:"90%", maxWidth:360}}><div style={{fontSize:18, fontWeight:800}}>{editProd?"Modifier":"Nouveau produit"}</div><input placeholder="Nom" value={pName} onChange={e=>setPName(e.target.value)} style={{width:"100%", background:T.inputBg, borderRadius:12, padding:12, margin:"12px 0", color:T.text}} /><input placeholder="Prix (F)" value={pPrice} onChange={e=>setPPrice(e.target.value.replace(/\D/g,""))} style={{width:"100%", background:T.inputBg, borderRadius:12, padding:12, marginBottom:12, color:T.text}} /><label style={{display:"flex", alignItems:"center", gap:6, marginBottom:12}}><input type="checkbox" checked={pStockUnlimited} onChange={e=>setPStockUnlimited(e.target.checked)} /><span>♾️ Stock illimité</span></label>{!pStockUnlimited && <input placeholder="Stock initial" value={pStock} onChange={e=>setPStock(e.target.value.replace(/\D/g,""))} style={{width:"100%", background:T.inputBg, borderRadius:12, padding:12, marginBottom:12, color:T.text}} />}<div style={{display:"flex", gap:8}}><button onClick={()=>setShowForm(false)} style={{flex:1, background:T.surface2, borderRadius:12, padding:12}}>Annuler</button><button onClick={addOrUpdate} style={{flex:1, background:T.accent, borderRadius:12, padding:12, color:T.bg}}>Enregistrer</button></div></div></div>)}
+    {showPinForm && (<div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.9)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000}}><div style={{background:T.surface, borderRadius:24, padding:20, width:"90%", maxWidth:360}}><div style={{fontSize:18, fontWeight:800}}>🔐 Changer le PIN Admin</div><input type="password" placeholder="Nouveau PIN (4 chiffres)" value={newPin} onChange={e=>setNewPin(e.target.value.replace(/\D/g,"").slice(0,4))} style={{width:"100%", background:T.inputBg, borderRadius:12, padding:12, margin:"12px 0", color:T.text}} /><input type="password" placeholder="Confirmer le PIN" value={newPinConfirm} onChange={e=>setNewPinConfirm(e.target.value.replace(/\D/g,"").slice(0,4))} style={{width:"100%", background:T.inputBg, borderRadius:12, padding:12, marginBottom:12, color:T.text}} /><div style={{display:"flex", gap:8}}><button onClick={()=>{setShowPinForm(false); setNewPin(""); setNewPinConfirm("");}} style={{flex:1, background:T.surface2, borderRadius:12, padding:12}}>Annuler</button><button onClick={handlePinChange} style={{flex:1, background:T.accent, borderRadius:12, padding:12, color:T.bg}}>Modifier</button></div></div></div>)}
+  </div>);
+}
+
+function DevDashboard({ T, themeName, setThemeName, logout, flashMsg }) {
+  const [shops, setShops] = useState([]); const [loading, setLoading] = useState(true); const [editingPlan, setEditingPlan] = useState(null);
+  useEffect(() => { if(!db) return; const unsub = db.collection("shops").onSnapshot(snap => { setShops(snap.docs.map(d=>({id:d.id, ...d.data()}))); setLoading(false); }); return unsub; }, []);
+  const updateSubscription = async (shopId, newPlan) => { const shop = shops.find(s => s.id === shopId); if(!shop) return; const now = Date.now(); const newEnd = calculateEndDate(now, newPlan); await db.collection("shops").doc(shopId).update({ plan: newPlan, subscriptionStart: now, subscriptionEnd: newEnd }); flashMsg(`Abonnement ${shop.shopName} mis à jour : ${newPlan}`); setEditingPlan(null); };
+  const sendReminder = async (shop) => { const daysLeft = shop.subscriptionEnd ? getDaysLeft(shop.subscriptionEnd) : 0; const message = `🔔 RAPPEL D'ABONNEMENT - ${shop.shopName}\n\nVotre abonnement ${shop.plan || "mensuel"} expire le ${formatDate(shop.subscriptionEnd)}\nPlus que ${daysLeft} jours !\n\nContactez-nous pour renouveler : ${DEV_WHATSAPP}`; window.open(`https://wa.me/${shop.whatsapp?.replace(/\D/g,"")}?text=${encodeURIComponent(message)}`, "_blank"); flashMsg(`Rappel envoyé à ${shop.shopName}`); };
+  const toggleShop = async (shop) => { await db.collection("shops").doc(shop.id).update({active:!shop.active}); flashMsg(shop.active?"Commerce suspendu":"Commerce activé"); };
+  const getPlanColor = (plan) => { if(plan === "mensuel") return T.blue; if(plan === "trimestriel") return T.orange; if(plan === "annuel") return T.green; return T.textMute; };
+  const getStatusColor = (shop) => { if(!shop.active) return T.red; if(!shop.subscriptionEnd) return T.orange; const daysLeft = getDaysLeft(shop.subscriptionEnd); if(daysLeft <= 0) return T.red; if(daysLeft <= 7) return T.orange; return T.green; };
+  return (<div style={{height:"100dvh", background:T.bg, display:"flex", flexDirection:"column"}}><div style={{background:T.header, padding:"8px 12px", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between"}}><div><div style={{fontSize:9, color:T.textMute}}>Développeur</div><div style={{fontFamily:"'Outfit'", fontWeight:800, color:T.purple}}>Gestion des abonnements + BLE Print</div></div><div style={{display:"flex", gap:8}}><div style={{display:"flex", gap:4}}>{Object.values(THEMES).map(t=><button key={t.id} onClick={()=>setThemeName(t.id)} style={{background:themeName===t.id?T.accent:"transparent", border:"none", borderRadius:16, width:28, height:28}}>{t.label}</button>)}</div><button onClick={logout} style={{background:"transparent", border:`1px solid ${T.border}`, borderRadius:8, padding:"4px 8px"}}>Déco</button></div></div><div style={{flex:1, overflowY:"auto", padding:12}}><div style={{background:T.surface, borderRadius:16, padding:16, marginBottom:16}}><div style={{fontWeight:700}}>🏪 Multi-commerce SaaS</div><div style={{fontSize:11, color:T.textMute}}>{shops.length} commerces · Gestion des abonnements (mensuel/trimestriel/annuel) · Bande défilante pour alertes</div></div>{loading ? <div className="spin" style={{width:30,height:30,border:`2px solid ${T.border}`,borderTopColor:T.accent,borderRadius:"50%",margin:"20px auto"}}></div> : shops.map(shop => { const daysLeft = shop.subscriptionEnd ? getDaysLeft(shop.subscriptionEnd) : 0; const statusColor = getStatusColor(shop); return (<div key={shop.id} style={{background:T.surface, borderRadius:16, padding:16, marginBottom:12, borderLeft: `4px solid ${statusColor}`}}><div style={{display:"flex", justifyContent:"space-between", alignItems:"start", flexWrap:"wrap", gap:8}}><div><div style={{fontWeight:800, fontSize:16}}>{shop.shopName}</div><div style={{fontSize:11, color:T.textMute}}>Propriétaire: {shop.ownerName} · WhatsApp: {shop.whatsapp}</div><div style={{fontSize:11, color:T.textMute}}>Créé le: {formatDate(shop.createdAt)}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:12, color:T.textMute}}>Statut</div><div style={{fontWeight:700, color:statusColor}}>{shop.active ? (daysLeft <= 0 ? "⚠️ Expiré" : (daysLeft <= 7 ? "⚠️ Bientôt expiré" : "✅ Actif")) : "🔒 Suspendu"}</div></div></div><div style={{marginTop:12, paddingTop:12, borderTop:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10}}><div><div style={{fontSize:11, color:T.textMute}}>Abonnement actuel</div><div style={{display:"flex", alignItems:"center", gap:6}}><span style={{background:getPlanColor(shop.plan), padding:"2px 10px", borderRadius:20, fontSize:12, fontWeight:600, color:"#fff"}}>{shop.plan || "mensuel"}</span>{shop.subscriptionEnd && <span style={{fontSize:11, color:T.textMute}}>Expire: {formatDate(shop.subscriptionEnd)} ({daysLeft} jours)</span>}</div></div><div style={{display:"flex", gap:6, flexWrap:"wrap"}}><select value={editingPlan === shop.id ? editingPlan : ""} onChange={e => { if(e.target.value) updateSubscription(shop.id, e.target.value); else setEditingPlan(null); }} style={{background:T.inputBg, border:`1px solid ${T.border}`, borderRadius:8, padding:"6px 10px", fontSize:11, color:T.text}}><option value="">Changer plan</option><option value="mensuel">📅 Mensuel (30j)</option><option value="trimestriel">📆 Trimestriel (90j)</option><option value="annuel">🗓️ Annuel (365j)</option></select><button onClick={()=>sendReminder(shop)} style={{background:T.btnBlue.bg, border:"none", borderRadius:8, padding:"6px 12px", fontSize:11, color:T.blue}}>📱 Rappel</button><button onClick={()=>toggleShop(shop)} style={{background:shop.active?T.btnRed.bg:T.btnGreen.bg, border:"none", borderRadius:8, padding:"6px 12px", fontSize:11, color:shop.active?T.red:T.green}}>{shop.active?"🔒 Suspendre":"✅ Activer"}</button></div></div></div>); })}</div></div>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
