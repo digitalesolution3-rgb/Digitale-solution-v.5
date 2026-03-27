@@ -99,7 +99,7 @@ try {
   if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
   db = firebase.firestore();
   auth = firebase.auth();
-  db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+  db.enablePersistence().catch(e => { if(e.code !== 'failed-precondition' && e.code !== 'unimplemented') console.warn("Persistance:", e.code); });
 } catch(e) { console.warn(e); }
 
 const DEV_PIN = "761278";
@@ -135,26 +135,27 @@ class OfflineStore {
 
 function syncShopData(shopId, setProducts, setSales, setStockMovements, setExpenses) {
   if(!db) return ()=>{};
+  const onErr = (col) => (e) => console.warn(`[Firestore] Erreur sync "${col}":`, e.code || e.message);
   const unsubProds = db.collection("shops").doc(shopId).collection("products").onSnapshot(snap => {
     const prods = snap.docs.map(d=>({id:d.id, ...d.data()})).filter(p => p.id !== "_init");
     OfflineStore.set(shopId, "products", prods);
     setProducts && setProducts(prods);
-  });
+  }, onErr("products"));
   const unsubSales = db.collection("shops").doc(shopId).collection("sales").onSnapshot(snap => {
     const sales = snap.docs.map(d=>({id:d.id, ...d.data()})).filter(s => s.id !== "_init");
     OfflineStore.set(shopId, "sales", sales);
     setSales && setSales(sales);
-  });
+  }, onErr("sales"));
   const unsubMovements = db.collection("shops").doc(shopId).collection("stock_movements").onSnapshot(snap => {
     const movements = snap.docs.map(d=>({id:d.id, ...d.data()}));
     OfflineStore.set(shopId, "stock_movements", movements);
     setStockMovements && setStockMovements(movements);
-  });
+  }, onErr("stock_movements"));
   const unsubExpenses = db.collection("shops").doc(shopId).collection("expenses").onSnapshot(snap => {
     const expenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
     OfflineStore.set(shopId, "expenses", expenses);
     setExpenses && setExpenses(expenses);
-  });
+  }, onErr("expenses"));
   return () => { unsubProds(); unsubSales(); unsubMovements(); unsubExpenses(); };
 }
 
@@ -273,16 +274,16 @@ function MainApp({ session, T, themeName, setThemeName, logout, flashMsg }) {
   const addSale = async (saleItems, saleTotal, print=true) => {
     for (const item of saleItems) { const product = products.find(p => p.id === item.productId); if (product && product.stock !== null && product.stock !== undefined && product.stock !== -1) { await updateStock(item.productId, - (item.qty || 1), "sortie", `Vente #${Date.now()}`); } }
     const newSale = { id: Date.now().toString(36)+Math.random().toString(36).slice(2), date: new Date().toISOString().slice(0,10), timestamp: Date.now(), items: saleItems, total: saleTotal, invoiceNum: Date.now(), cancelled: false };
-    setSales([...sales, newSale]); OfflineStore.set(session.shopId, "sales", [...sales, newSale]);
-    if(db) db.collection("shops").doc(session.shopId).collection("sales").doc(newSale.id).set(newSale).catch(()=>{});
+    setSales(prev => { const updated = [...prev, newSale]; OfflineStore.set(session.shopId, "sales", updated); return updated; });
+    if(db) db.collection("shops").doc(session.shopId).collection("sales").doc(newSale.id).set(newSale).catch(e => console.warn("[Firestore] Erreur addSale:", e));
     if(print) { try { if (useBLE && printer.connected) { await printViaBLE(session.shopName, session.shopPhone, saleItems, saleTotal, newSale.invoiceNum); flashMsg("✅ Vente + impression BLE"); } else { printFallback(session.shopName, session.shopPhone, saleItems, saleTotal, newSale.invoiceNum); flashMsg("✅ Vente + impression navigateur"); } } catch(e) { printFallback(session.shopName, session.shopPhone, saleItems, saleTotal, newSale.invoiceNum); flashMsg("✅ Vente (fallback)"); } } else { flashMsg("✅ Vente enregistrée"); }
     setItems([]);
   };
 
   const addExpense = async (expense) => {
     const newExpense = { ...expense, id: Date.now().toString(36)+Math.random().toString(36).slice(2), timestamp: Date.now() };
-    setExpenses([newExpense, ...expenses]); OfflineStore.set(session.shopId, "expenses", [newExpense, ...expenses]);
-    if(db) db.collection("shops").doc(session.shopId).collection("expenses").doc(newExpense.id).set(newExpense);
+    setExpenses(prev => { const updated = [newExpense, ...prev]; OfflineStore.set(session.shopId, "expenses", updated); return updated; });
+    if(db) db.collection("shops").doc(session.shopId).collection("expenses").doc(newExpense.id).set(newExpense).catch(e => console.warn("[Firestore] Erreur addExpense:", e));
     flashMsg(`Dépense enregistrée: ${expense.label} - ${fmtPrice(expense.amount)}`);
   };
 
@@ -298,7 +299,7 @@ function MainApp({ session, T, themeName, setThemeName, logout, flashMsg }) {
   const verifyAdminPin = () => { const expectedPin = atob(session.adminPin || btoa("0000")); if (pinInput === expectedPin) { setPinModal(false); setPinInput(""); setOwnerMode(true); } else { setPinError(true); setPinShake(true); setTimeout(() => { setPinShake(false); setPinInput(""); setPinError(false); }, 700); } };
   const enterOwnerMode = () => { setPinModal(true); setPinInput(""); setPinError(false); };
   const exitOwnerMode = () => { setOwnerMode(false); };
-  const updateAdminPin = async (newPin) => { const newEncoded = btoa(newPin); await db.collection("shops").doc(session.shopId).update({ adminPin: newEncoded }); session.adminPin = newEncoded; flashMsg("PIN administrateur modifié"); };
+  const updateAdminPin = async (newPin) => { const newEncoded = btoa(newPin); if(db) { try { await db.collection("shops").doc(session.shopId).update({ adminPin: newEncoded }); } catch(e) { console.warn("[Firestore] Erreur updateAdminPin:", e); } } session.adminPin = newEncoded; flashMsg("PIN administrateur modifié"); };
 
   return (
     <div style={{height:"100dvh", background:T.bg, display:"flex", flexDirection:"column"}}>
