@@ -842,8 +842,15 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 const API_BASE = window.location.origin; // conservé pour compatibilité SW
 
 // FIREBASE_CONFIG global — déclaré ici, chargé depuis localStorage au boot
-const FIREBASE_CONFIG = { apiKey:'VOTRE_API_KEY', authDomain:'', projectId:'', storageBucket:'', messagingSenderId:'', appId:'' };
-
+const FIREBASE_CONFIG = {   apiKey: "AIzaSyALuXs5scz3O1uzC7PJ6Z-RY608ilFBMrg",
+  authDomain: "posv5-78b92.firebaseapp.com",
+  databaseURL: "https://posv5-78b92-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "posv5-78b92",
+  storageBucket: "posv5-78b92.firebasestorage.app",
+  messagingSenderId: "508434695902",
+  appId: "1:508434695902:web:e35a1eb0c5eec00106244f"
+};
+' 
 // ============================================================
 // FB — moteur Firestore (remplace toutes les routes /api/*)
 // Toutes les données sont dans Firestore, localStorage = cache
