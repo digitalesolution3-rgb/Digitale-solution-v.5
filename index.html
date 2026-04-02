@@ -31,17 +31,48 @@
 // Initialisation Firebase — appelée depuis le panel Admin Développeur
 window._fbApp = null;
 window._fbDb  = null;
-window._fbInit = function(cfg) {
+window._fbInitPending = false;
+
+// Attend que le SDK firebase soit disponible (max 10s)
+function _waitForFirebaseSDK() {
+  return new Promise((resolve, reject) => {
+    if (typeof firebase !== 'undefined' && firebase.firestore) { resolve(); return; }
+    let tries = 0;
+    const t = setInterval(() => {
+      tries++;
+      if (typeof firebase !== 'undefined' && firebase.firestore) {
+        clearInterval(t); resolve();
+      } else if (tries > 100) {
+        clearInterval(t);
+        reject(new Error('SDK Firebase non chargé — vérifiez votre connexion internet.'));
+      }
+    }, 100);
+  });
+}
+
+window._fbInit = async function(cfg) {
+  if (window._fbInitPending) return;
+  window._fbInitPending = true;
   try {
-    if (window._fbApp) { window._fbApp.delete().catch(()=>{}); }
-    window._fbApp = firebase.initializeApp(cfg, 'ds_app_' + Date.now());
+    // Attendre que le SDK soit disponible
+    await _waitForFirebaseSDK();
+    // Supprimer l'ancienne instance
+    if (window._fbApp) {
+      try { await window._fbApp.delete(); } catch(e) {}
+      window._fbApp = null;
+      window._fbDb  = null;
+    }
+    window._fbApp = firebase.initializeApp(cfg, 'ds_' + Date.now());
     window._fbDb  = firebase.firestore(window._fbApp);
     window._fbDb.settings({ experimentalForceLongPolling: true, merge: true });
     console.log('🔥 Firebase initialisé — project:', cfg.projectId);
     window.dispatchEvent(new Event('firebase-sdk-loaded'));
   } catch(e) {
-    console.error('Firebase init error:', e);
+    console.error('Firebase init error:', e.message);
     window._fbDb = null;
+    window._fbApp = null;
+  } finally {
+    window._fbInitPending = false;
   }
 };
 </script>
@@ -842,15 +873,8 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 const API_BASE = window.location.origin; // conservé pour compatibilité SW
 
 // FIREBASE_CONFIG global — déclaré ici, chargé depuis localStorage au boot
-const FIREBASE_CONFIG = { apiKey: "AIzaSyALuXs5scz3O1uzC7PJ6Z-RY608ilFBMrg",
-  authDomain: "posv5-78b92.firebaseapp.com",
-  databaseURL: "https://posv5-78b92-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "posv5-78b92",
-  storageBucket: "posv5-78b92.firebasestorage.app",
-  messagingSenderId: "508434695902",
-  appId: "1:508434695902:web:e35a1eb0c5eec00106244f"
-};
-  
+const FIREBASE_CONFIG = { apiKey:'VOTRE_API_KEY', authDomain:'', projectId:'', storageBucket:'', messagingSenderId:'', appId:'' };
+
 // ============================================================
 // FB — moteur Firestore (remplace toutes les routes /api/*)
 // Toutes les données sont dans Firestore, localStorage = cache
@@ -5508,25 +5532,27 @@ function saveFirebaseConfig() {
 
   localStorage.setItem('ds_firebase_cfg', JSON.stringify(cfg));
   Object.assign(FIREBASE_CONFIG, cfg);
-  showFbFeedback('⏳ Connexion Firebase en cours...', 'info');
+  showFbFeedback('⏳ Initialisation Firebase...', 'info');
 
-  // Tenter l'init et attendre que _fbDb soit assigné (max 3s)
-  try { if (window._fbInit) window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn(e); }
+  // Lancer l'init (async)
+  Promise.resolve().then(() => window._fbInit(FIREBASE_CONFIG)).catch(e => console.warn(e));
 
+  // Vérifier toutes les 200ms pendant 8 secondes max
   let attempts = 0;
   const check = setInterval(() => {
     attempts++;
     if (window._fbDb) {
       clearInterval(check);
-      showFbFeedback('✅ Firebase connecté — cliquez ▶ Activer pour démarrer la sync !', 'success');
+      showFbFeedback('✅ Firebase connecté — cliquez ▶ Activer !', 'success');
       ADB.addActivity('firebase_config', 'Config Firebase — project: ' + cfg.projectId);
       updateFirebaseBadge();
-    } else if (attempts >= 30) { // 3 secondes
+    } else if (attempts >= 40) { // 8 secondes
       clearInterval(check);
-      showFbFeedback('⚠️ Firebase configuré mais connexion lente — vérifiez vos clés et réessayez.', 'error');
+      // Vérifier si une erreur est visible dans la console
+      showFbFeedback('❌ Connexion échouée — vérifiez dans la console F12 pour le détail de l\'erreur Firebase.', 'error');
       updateFirebaseBadge();
     }
-  }, 100);
+  }, 200);
 }
 
 function clearFirebaseConfig() {
@@ -6634,3 +6660,4 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
 
 </body>
 </html>
+
