@@ -841,6 +841,9 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 <script>
 const API_BASE = window.location.origin; // conservé pour compatibilité SW
 
+// FIREBASE_CONFIG global — déclaré ici, chargé depuis localStorage au boot
+const FIREBASE_CONFIG = { apiKey:'VOTRE_API_KEY', authDomain:'', projectId:'', storageBucket:'', messagingSenderId:'', appId:'' };
+
 // ============================================================
 // FB — moteur Firestore (remplace toutes les routes /api/*)
 // Toutes les données sont dans Firestore, localStorage = cache
@@ -1152,7 +1155,7 @@ async function _fbSyncAll(data) {
 <div id="page-landing" class="page active">
   <div class="lbg"></div>
   <nav class="lnav">
-    <div class="logo">
+    <div class="logo" id="dev-logo-trigger" style="cursor:pointer;user-select:none">
       <svg class="logo-icon"><use href="#logo-sym"/></svg>
       <span class="logo-text"><strong>DIGITALE</strong> <em>SOLUTION</em></span>
     </div>
@@ -5852,9 +5855,6 @@ function getFirebaseStatus() { return FB.ready() ? '🔥 Connecté' : '⚙️ No
 function injectFirebaseSettingsUI() {}
 function renderFirebaseStatus() {}
 
-// FIREBASE_CONFIG global — chargé depuis localStorage
-const FIREBASE_CONFIG = { apiKey:'VOTRE_API_KEY', authDomain:'', projectId:'', storageBucket:'', messagingSenderId:'', appId:'' };
-
 // Charger config sauvegardée et démarrer automatiquement
 (function loadAndStartFirebase() {
   const saved = localStorage.getItem('ds_firebase_cfg');
@@ -6216,36 +6216,19 @@ function initOfflineSystem() {
 
 // ============================================================
 // API CLIENT AMÉLIORÉ — wrapper offline-aware
+// Note: API.post est maintenant Firebase — pas de vraie requête réseau
+// La file offline est conservée pour compatibilité mais ne s'active plus
 // ============================================================
 
 // Surcharge de API.post pour gérer le mode hors ligne
 const _originalAPIPost = API.post.bind(API);
 API.post = async function(endpoint, body) {
   try {
-    const res = await _originalAPIPost(endpoint, body);
-    if (res.offline) {
-      console.log('[API] Réponse offline pour:', endpoint);
-      return res;
-    }
-    return res;
+    return await _originalAPIPost(endpoint, body);
   } catch(err) {
-    // Ne mettre en file d'attente QUE les vraies erreurs réseau (TypeError: Failed to fetch)
-    // PAS les erreurs serveur (500, HTML inattendu, JSON invalide)
-    const isNetworkError = !navigator.onLine ||
-      (err instanceof TypeError && err.message.toLowerCase().includes('failed to fetch'));
-
-    if (isNetworkError) {
-      const item = OfflineQueue.add({
-        type: 'api_post',
-        url:  API_BASE + '/api/' + endpoint,
-        method: 'POST',
-        body
-      });
-      console.log('[API] Requête offline mise en file:', endpoint);
-      return { success: true, offline: true, queued: true, queue_id: item.id };
-    }
-    // Erreur serveur réelle — on la propage pour que l'UI puisse l'afficher
-    console.error('[API] Erreur serveur sur', endpoint, ':', err.message);
+    // Avec Firebase, les erreurs sont des erreurs Firestore, pas réseau
+    // On propage pour que l'UI puisse les afficher
+    console.error('[API/FB] Erreur sur', endpoint, ':', err.message);
     throw err;
   }
 };
@@ -6434,6 +6417,119 @@ function _buildRapportHtml(m, cfg, data, sales, fond, dev, today) {
     <div class="therm-center therm-sm">― Digitale Solution ―</div>
   </div>`;
 }
+
+// ============================================================
+// TRIPLE-CLIC LOGO → MODAL PIN DÉVELOPPEUR
+// ============================================================
+(function initDevPinSystem() {
+  const DEV_PIN = '761278';
+
+  // Injecter le modal PIN dans le DOM
+  const modalHTML = `
+  <div id="dev-pin-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:99999;align-items:center;justify-content:center;backdrop-filter:blur(4px)">
+    <div style="background:#0F0E0D;border:1px solid rgba(232,115,12,0.25);border-radius:18px;padding:32px 28px;width:100%;max-width:320px;margin:20px;text-align:center;box-shadow:0 24px 60px rgba(0,0,0,.6)">
+      <div style="font-size:1.4rem;margin-bottom:4px">🔐</div>
+      <div style="font-family:'Syne',sans-serif;font-size:1rem;font-weight:700;color:#F0EDE8;margin-bottom:4px">Accès Développeur</div>
+      <div style="font-size:.75rem;color:#5A5652;margin-bottom:20px">Panneau d'administration système</div>
+      <div id="dev-pin-dots" style="display:flex;justify-content:center;gap:10px;margin-bottom:20px"></div>
+      <div id="dev-pin-err" style="color:#E74C3C;font-size:.78rem;min-height:18px;margin-bottom:8px"></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+        <button onclick="devPinKey('1')" class="dpk">1</button><button onclick="devPinKey('2')" class="dpk">2</button><button onclick="devPinKey('3')" class="dpk">3</button>
+        <button onclick="devPinKey('4')" class="dpk">4</button><button onclick="devPinKey('5')" class="dpk">5</button><button onclick="devPinKey('6')" class="dpk">6</button>
+        <button onclick="devPinKey('7')" class="dpk">7</button><button onclick="devPinKey('8')" class="dpk">8</button><button onclick="devPinKey('9')" class="dpk">9</button>
+        <div></div><button onclick="devPinKey('0')" class="dpk">0</button><button onclick="devPinKey('del')" class="dpk dpk-del">⌫</button>
+      </div>
+      <button onclick="devPinClose()" style="font-size:.75rem;color:#5A5652;background:none;border:none;cursor:pointer;padding:4px 12px;border-radius:6px;transition:color .15s" onmouseover="this.style.color='#F0EDE8'" onmouseout="this.style.color='#5A5652'">✕ Annuler</button>
+    </div>
+  </div>
+  <style>
+  .dpk{background:#1E1C1A;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:15px 0;font-size:1.15rem;font-weight:700;cursor:pointer;color:#F0EDE8;font-family:'Syne',sans-serif;transition:background .12s,transform .1s}
+  .dpk:hover{background:#2A2724;transform:scale(1.04)}
+  .dpk:active{background:#E8730C;color:#fff;transform:scale(.97)}
+  .dpk-del{color:#E74C3C}
+  .dpk-del:active{background:#E74C3C;color:#fff}
+  </style>`;
+
+  document.addEventListener('DOMContentLoaded', () => {
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+    let pinBuffer = '';
+    const MAX = DEV_PIN.length;
+
+    function renderDots() {
+      const el = document.getElementById('dev-pin-dots');
+      if (!el) return;
+      el.innerHTML = Array.from({length: MAX}).map((_,i) =>
+        `<div style="width:13px;height:13px;border-radius:50%;border:2px solid rgba(232,115,12,0.5);background:${i < pinBuffer.length ? '#E8730C' : 'transparent'};transition:background .15s"></div>`
+      ).join('');
+    }
+
+    window.devPinKey = function(k) {
+      const err = document.getElementById('dev-pin-err');
+      if (err) err.textContent = '';
+      if (k === 'del') { pinBuffer = pinBuffer.slice(0, -1); renderDots(); return; }
+      if (pinBuffer.length >= MAX) return;
+      pinBuffer += k;
+      renderDots();
+      if (pinBuffer.length === MAX) {
+        setTimeout(() => {
+          if (pinBuffer === DEV_PIN) {
+            sessionStorage.setItem('dsa_session', '1');
+            devPinClose();
+            if (typeof showPage !== 'undefined')        showPage('page-admin');
+            if (typeof adminSection !== 'undefined')    adminSection('developer');
+            if (typeof startAdminClock !== 'undefined') startAdminClock();
+            if (typeof updatePayBadge !== 'undefined')  updatePayBadge();
+            if (typeof ADB !== 'undefined')             ADB.addActivity('login', 'Accès développeur — triple-clic logo');
+          } else {
+            pinBuffer = ''; renderDots();
+            const e = document.getElementById('dev-pin-err');
+            if (e) e.textContent = '⚠️ PIN incorrect. Réessayez.';
+          }
+        }, 100);
+      }
+    };
+
+    window.devPinClose = function() {
+      pinBuffer = ''; renderDots();
+      const overlay = document.getElementById('dev-pin-overlay');
+      if (overlay) overlay.style.display = 'none';
+      const err = document.getElementById('dev-pin-err');
+      if (err) err.textContent = '';
+    };
+
+    // Fermer sur clic fond
+    document.addEventListener('click', function(e) {
+      const overlay = document.getElementById('dev-pin-overlay');
+      if (overlay && e.target === overlay) devPinClose();
+    });
+
+    // Clavier physique
+    document.addEventListener('keydown', function(e) {
+      const overlay = document.getElementById('dev-pin-overlay');
+      if (!overlay || overlay.style.display === 'none') return;
+      if (e.key >= '0' && e.key <= '9') devPinKey(e.key);
+      else if (e.key === 'Backspace') devPinKey('del');
+      else if (e.key === 'Escape') devPinClose();
+    });
+
+    // Triple-clic sur le logo
+    let _cc = 0, _ct = null;
+    document.addEventListener('click', function(e) {
+      const trigger = document.getElementById('dev-logo-trigger');
+      if (!trigger || !trigger.contains(e.target)) return;
+      _cc++;
+      if (_ct) clearTimeout(_ct);
+      _ct = setTimeout(() => { _cc = 0; }, 600);
+      if (_cc >= 3) {
+        _cc = 0; clearTimeout(_ct);
+        pinBuffer = ''; renderDots();
+        const overlay = document.getElementById('dev-pin-overlay');
+        if (overlay) overlay.style.display = 'flex';
+      }
+    });
+  });
+})();
 
 // --- FINAL INIT ---
 document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 Démarrage de Digitale Solution...');
