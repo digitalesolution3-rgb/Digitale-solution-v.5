@@ -842,14 +842,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 const API_BASE = window.location.origin; // conservé pour compatibilité SW
 
 // FIREBASE_CONFIG global — déclaré ici, chargé depuis localStorage au boot
-const FIREBASE_CONFIG = { apiKey: "AIzaSyALuXs5scz3O1uzC7PJ6Z-RY608ilFBMrg",
-  authDomain: "posv5-78b92.firebaseapp.com",
-  databaseURL: "https://posv5-78b92-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "posv5-78b92",
-  storageBucket: "posv5-78b92.firebasestorage.app",
-  messagingSenderId: "508434695902",
-  appId: "1:508434695902:web:e35a1eb0c5eec00106244f"
-};
+const FIREBASE_CONFIG = { apiKey:'VOTRE_API_KEY', authDomain:'', projectId:'', storageBucket:'', messagingSenderId:'', appId:'' };
 
 // ============================================================
 // FB — moteur Firestore (remplace toutes les routes /api/*)
@@ -5505,14 +5498,28 @@ function saveFirebaseConfig() {
     if (!cfg[f] && (f === 'apiKey' || f === 'projectId')) missing.push(f);
   });
   if (missing.length) { showFbFeedback('⚠️ ' + missing.join(', ') + ' sont obligatoires.', 'error'); return; }
+
   localStorage.setItem('ds_firebase_cfg', JSON.stringify(cfg));
   Object.assign(FIREBASE_CONFIG, cfg);
-  if (window._fbInit) {
-    try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn(e); }
-  }
-  showFbFeedback('✅ Config sauvegardée et appliquée — Firebase prêt !', 'success');
-  ADB.addActivity('firebase_config', 'Config Firebase — project: ' + cfg.projectId);
-  setTimeout(updateFirebaseBadge, 800);
+  showFbFeedback('⏳ Connexion Firebase en cours...', 'info');
+
+  // Tenter l'init et attendre que _fbDb soit assigné (max 3s)
+  try { if (window._fbInit) window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn(e); }
+
+  let attempts = 0;
+  const check = setInterval(() => {
+    attempts++;
+    if (window._fbDb) {
+      clearInterval(check);
+      showFbFeedback('✅ Firebase connecté — cliquez ▶ Activer pour démarrer la sync !', 'success');
+      ADB.addActivity('firebase_config', 'Config Firebase — project: ' + cfg.projectId);
+      updateFirebaseBadge();
+    } else if (attempts >= 30) { // 3 secondes
+      clearInterval(check);
+      showFbFeedback('⚠️ Firebase configuré mais connexion lente — vérifiez vos clés et réessayez.', 'error');
+      updateFirebaseBadge();
+    }
+  }, 100);
 }
 
 function clearFirebaseConfig() {
@@ -5543,11 +5550,26 @@ function toggleFirebaseSync() {
 }
 
 function startFirebaseSync() {
-  if (!FB.ready()) { showFbFeedback('⚠️ Sauvegardez d\'abord votre config Firebase.', 'error'); return; }
+  // Si pas encore prêt, tenter une dernière init avant d'abandonner
+  if (!FB.ready()) {
+    if (FIREBASE_CONFIG.apiKey === 'VOTRE_API_KEY') {
+      showFbFeedback('⚠️ Sauvegardez d\'abord votre config Firebase.', 'error');
+      return;
+    }
+    // Config présente mais _fbDb pas encore assigné — réessayer l'init
+    try { if (window._fbInit) window._fbInit(FIREBASE_CONFIG); } catch(e) {}
+    if (!FB.ready()) {
+      showFbFeedback('⏳ Firebase s\'initialise, réessayez dans 2 secondes...', 'info');
+      setTimeout(() => {
+        if (FB.ready()) startFirebaseSync();
+        else showFbFeedback('❌ Firebase non disponible — vérifiez vos clés.', 'error');
+      }, 2000);
+      return;
+    }
+  }
   _fbSyncActive = true;
   window.FB_MODE = 'firebase';
   _registerCurrentDevice();
-  // Démarrer listeners pour le marchand courant si connecté
   const m = typeof Auth !== 'undefined' ? Auth.current() : null;
   if (m) {
     FB.listenMerchant(m.id, (col) => {
