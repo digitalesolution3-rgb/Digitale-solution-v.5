@@ -23,6 +23,28 @@
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png"/>
 <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet"/>
+
+<!-- ====================== FIREBASE SDK ====================== -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script>
+// Initialisation Firebase — appelée depuis le panel Admin Développeur
+window._fbApp = null;
+window._fbDb  = null;
+window._fbInit = function(cfg) {
+  try {
+    if (window._fbApp) { window._fbApp.delete().catch(()=>{}); }
+    window._fbApp = firebase.initializeApp(cfg, 'ds_app_' + Date.now());
+    window._fbDb  = firebase.firestore(window._fbApp);
+    window._fbDb.settings({ experimentalForceLongPolling: true, merge: true });
+    console.log('🔥 Firebase initialisé — project:', cfg.projectId);
+    window.dispatchEvent(new Event('firebase-sdk-loaded'));
+  } catch(e) {
+    console.error('Firebase init error:', e);
+    window._fbDb = null;
+  }
+};
+</script>
 <style>
 /* ================================w.============================
    DIGITALE SOLUTION — CSS
@@ -815,68 +837,291 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 </style>
 
 
-<!-- ====================== API LAYER — remplace Firebase SDK côté client ====================== -->
+<!-- ====================== FIREBASE FIRESTORE ENGINE ====================== -->
 <script>
-// URL de base de l'API — auto-détectée selon l'environnement
-const API_BASE = window.location.origin;
+const API_BASE = window.location.origin; // conservé pour compatibilité SW
 
-// Lit la réponse en JSON de façon sûre — si le serveur renvoie du HTML (erreur Vercel),
-// on lance une erreur claire au lieu de "Unexpected token 'A'"
-async function _safeJson(res) {
-  const ct = res.headers.get('content-type') || '';
-  if (!ct.includes('application/json')) {
-    const text = await res.text();
-    const preview = text.substring(0, 120).replace(/\n/g, ' ');
-    throw new Error(`Réponse serveur invalide (HTTP ${res.status}) : ${preview}`);
-  }
-  return res.json();
-}
+// ============================================================
+// FB — moteur Firestore (remplace toutes les routes /api/*)
+// Toutes les données sont dans Firestore, localStorage = cache
+// ============================================================
+const FB = {
 
-// Client API simple — toutes les communications passent par /api/
-const API = {
-  async post(endpoint, body) {
-    const res = await fetch(API_BASE + '/api/' + endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    const data = await _safeJson(res);
-    if (!res.ok) throw new Error(data.error || 'Erreur serveur ' + res.status);
-    return data;
+  // --- Utilitaires ---
+  db() { return window._fbDb; },
+  ready() { return !!window._fbDb; },
+
+  col(name)    { return this.db().collection(name); },
+  doc(col, id) { return this.db().collection(col).doc(id); },
+
+  // --- MERCHANTS ---
+  async getMerchant(id) {
+    const snap = await this.doc('merchants', id).get();
+    return snap.exists ? { id: snap.id, ...snap.data() } : null;
   },
-  async get(endpoint, params = {}) {
-    const qs = new URLSearchParams(params).toString();
-    const url = API_BASE + '/api/' + endpoint + (qs ? '?' + qs : '');
-    const res = await fetch(url);
-    const data = await _safeJson(res);
-    if (!res.ok) throw new Error(data.error || 'Erreur serveur ' + res.status);
-    return data;
+  async getMerchantByPhone(tel) {
+    const snap = await this.col('merchants').where('telephone', '==', tel).limit(1).get();
+    return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
   },
-  async admin(action, body = {}) {
-    const cfg = ADB?.getCfg?.() || {};
-    const token = cfg.admin_secret || localStorage.getItem('ds_admin_secret') || 'DIGITALE_ADMIN';
-    const res = await fetch(API_BASE + '/api/admin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ action, ...body })
+  async saveMerchant(m) {
+    await this.doc('merchants', m.id).set(m, { merge: true });
+  },
+  async getAllMerchants() {
+    const snap = await this.col('merchants').get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+
+  // --- CONFIGS ---
+  async getConfig(merchantId) {
+    const snap = await this.col('configs').where('merchant_id', '==', merchantId).limit(1).get();
+    return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+  },
+  async saveConfig(cfg) {
+    const id = cfg.id || cfg.merchant_id + '_cfg';
+    cfg.id = id;
+    await this.doc('configs', id).set(cfg, { merge: true });
+  },
+
+  // --- PRODUCTS ---
+  async getProducts(merchantId) {
+    const snap = await this.col('products').where('merchant_id', '==', merchantId).get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  async saveProduct(item) {
+    await this.doc('products', item.id).set(item, { merge: true });
+  },
+  async deleteProduct(id) {
+    await this.doc('products', id).delete();
+  },
+
+  // --- CLIENTS ---
+  async getClients(merchantId) {
+    const snap = await this.col('clients').where('merchant_id', '==', merchantId).get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  async saveClient(item) {
+    await this.doc('clients', item.id).set(item, { merge: true });
+  },
+
+  // --- SALES ---
+  async getSales(merchantId) {
+    const snap = await this.col('sales').where('merchant_id', '==', merchantId).get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  async saveSale(item) {
+    await this.doc('sales', item.id).set(item, { merge: true });
+  },
+
+  // --- SYNC COMPLÈTE marchand → Firestore ---
+  async pushAll(merchantId) {
+    if (!this.ready()) return;
+    const batch = this.db().batch();
+    const m = DB.get('merchants').find(x => x.id === merchantId);
+    if (m) batch.set(this.doc('merchants', m.id), m, { merge: true });
+    const cfg = DB.get('configs').find(c => c.merchant_id === merchantId);
+    if (cfg) batch.set(this.doc('configs', cfg.id || merchantId + '_cfg'), cfg, { merge: true });
+    DB.forM('products', merchantId).forEach(p => batch.set(this.doc('products', p.id), p, { merge: true }));
+    DB.forM('clients',  merchantId).forEach(c => batch.set(this.doc('clients',  c.id), c, { merge: true }));
+    DB.forM('sales',    merchantId).forEach(s => batch.set(this.doc('sales',    s.id), s, { merge: true }));
+    await batch.commit();
+  },
+
+  // --- PULL Firestore → localStorage pour un marchand ---
+  async pullAll(merchantId) {
+    if (!this.ready()) return;
+    const [products, clients, sales, cfgData] = await Promise.all([
+      this.getProducts(merchantId),
+      this.getClients(merchantId),
+      this.getSales(merchantId),
+      this.getConfig(merchantId)
+    ]);
+    if (products.length) {
+      const all = DB.get('products').filter(r => r.merchant_id !== merchantId);
+      DB.set('products', [...all, ...products]);
+    }
+    if (clients.length) {
+      const all = DB.get('clients').filter(r => r.merchant_id !== merchantId);
+      DB.set('clients', [...all, ...clients]);
+    }
+    if (sales.length) {
+      const all = DB.get('sales').filter(r => r.merchant_id !== merchantId);
+      DB.set('sales', [...all, ...sales]);
+    }
+    if (cfgData) {
+      const all = DB.get('configs').filter(c => c.merchant_id !== merchantId);
+      DB.set('configs', [...all, cfgData]);
+    }
+  },
+
+  // --- TEMPS RÉEL — écouter les changements d'un marchand ---
+  _unsubs: [],
+  listenMerchant(merchantId, onUpdate) {
+    if (!this.ready()) return;
+    this.stopListening();
+    const collections = ['products', 'clients', 'sales'];
+    collections.forEach(col => {
+      const unsub = this.col(col)
+        .where('merchant_id', '==', merchantId)
+        .onSnapshot(snap => {
+          snap.docChanges().forEach(change => {
+            const data = { id: change.doc.id, ...change.doc.data() };
+            if (change.type === 'removed') {
+              DB.set(col, DB.get(col).filter(r => r.id !== data.id));
+            } else {
+              const all = DB.get(col);
+              const idx = all.findIndex(r => r.id === data.id);
+              if (idx !== -1) all[idx] = data; else all.push(data);
+              DB.set(col, all);
+            }
+          });
+          if (onUpdate) onUpdate(col, snap.docChanges().length);
+        }, err => console.warn('FB listener error:', col, err));
+      this._unsubs.push(unsub);
     });
-    const data = await _safeJson(res);
-    if (!res.ok) throw new Error(data.error || 'Erreur serveur ' + res.status);
-    return data;
+    console.log('🔥 Listeners temps réel actifs pour', merchantId);
+  },
+  stopListening() {
+    this._unsubs.forEach(fn => { try { fn(); } catch(e) {} });
+    this._unsubs = [];
   }
 };
 
-// Indicateur de connectivité API
-let API_ONLINE = true;
-async function checkApiStatus() {
-  try {
-    const r = await fetch(API_BASE + '/api/login', { method: 'OPTIONS' });
-    API_ONLINE = r.ok || r.status === 200 || r.status === 204;
-  } catch(e) {
-    API_ONLINE = false;
+// API stub — toutes les routes /api/* redirigent vers FB ou localStorage
+// Garde la compatibilité avec les appels existants dans le code
+const API = {
+  async post(endpoint, body) {
+    if (endpoint === 'register') return _fbRegister(body);
+    if (endpoint === 'login')    return _fbLogin(body);
+    if (endpoint === 'sync')     return _fbSync(body);
+    return { ok: true };
+  },
+  async get(endpoint, params = {}) {
+    if (endpoint === 'data') return _fbLoadData(params.merchant_id);
+    return { data: null };
+  },
+  async admin(action, body = {}) {
+    if (action === 'sync_all') return _fbSyncAll(body.data);
+    return { ok: true };
   }
+};
+
+// Pas de vrai ping API
+let API_ONLINE = true;
+async function checkApiStatus() { API_ONLINE = FB.ready(); }
+window.addEventListener('load', () => setTimeout(checkApiStatus, 2000));
+
+// --- Implémentations des routes ---
+
+async function _fbRegister({ nom_commerce, proprietaire, telephone, ville, password, type }) {
+  // 1. Créer localement
+  const m = Auth.register({ nom_commerce, proprietaire, telephone, ville, password, type });
+  const config = DB.get('configs').find(c => c.merchant_id === m.id);
+  // 2. Pousser vers Firestore si disponible
+  if (FB.ready()) {
+    try {
+      await FB.saveMerchant(m);
+      if (config) await FB.saveConfig(config);
+    } catch(e) { console.warn('FB register push:', e); }
+  }
+  return { merchant: m, config };
 }
-window.addEventListener('load', checkApiStatus);
+
+async function _fbLogin({ telephone, password }) {
+  // 1. Essayer Firestore en premier si disponible
+  if (FB.ready()) {
+    try {
+      const m = await FB.getMerchantByPhone(telephone);
+      if (m) {
+        if (m.password !== DB._hash(password)) throw new Error('Numéro ou mot de passe incorrect.');
+        if (!m.actif) throw new Error('Compte désactivé.');
+        // Mettre à jour le cache local
+        const merchants = DB.get('merchants');
+        const idx = merchants.findIndex(x => x.id === m.id);
+        if (idx !== -1) merchants[idx] = m; else merchants.push(m);
+        DB.set('merchants', merchants);
+        // Charger toutes les données
+        await FB.pullAll(m.id);
+        // Démarrer listeners temps réel
+        FB.listenMerchant(m.id, (col, count) => {
+          const active = document.querySelector('.section.active');
+          if (active) {
+            const sec = active.id.replace('s-','');
+            const r = {products:renderProducts,clients:renderClients,sales:renderSales,stock:renderStock,dashboard:renderDashboard};
+            r[sec]?.();
+          }
+        });
+        const data = {
+          products: DB.forM('products', m.id),
+          clients:  DB.forM('clients',  m.id),
+          sales:    DB.forM('sales',    m.id),
+          configs:  DB.forM('configs',  m.id)
+        };
+        return { merchant: m, data };
+      }
+    } catch(e) {
+      if (e.message.includes('incorrect') || e.message.includes('désactivé')) throw e;
+      console.warn('FB login fallback local:', e.message);
+    }
+  }
+  // 2. Fallback localStorage
+  const m = Auth.login(telephone, password);
+  return { merchant: m, data: {
+    products: DB.forM('products', m.id),
+    clients:  DB.forM('clients',  m.id),
+    sales:    DB.forM('sales',    m.id),
+    configs:  DB.forM('configs',  m.id)
+  }};
+}
+
+async function _fbLoadData(merchantId) {
+  if (!merchantId) return { data: null };
+  if (FB.ready()) {
+    try { await FB.pullAll(merchantId); } catch(e) { console.warn('FB pull:', e); }
+  }
+  return { data: {
+    products: DB.forM('products', merchantId),
+    clients:  DB.forM('clients',  merchantId),
+    sales:    DB.forM('sales',    merchantId),
+    configs:  DB.forM('configs',  merchantId)
+  }};
+}
+
+async function _fbSync({ merchant_id, collection, item, items, delete: delId }) {
+  if (!merchant_id || !collection) return { ok: true };
+  if (!FB.ready()) return { ok: true }; // silencieux — sera synced plus tard
+  try {
+    if (delId) {
+      await FB.db().collection(collection).doc(delId).delete();
+    } else if (items) {
+      const batch = FB.db().batch();
+      items.forEach(it => batch.set(FB.doc(collection, it.id), it, { merge: true }));
+      await batch.commit();
+    } else if (item) {
+      await FB.db().collection(collection).doc(item.id).set(item, { merge: true });
+    }
+  } catch(e) { console.warn('FB sync:', e); }
+  return { ok: true };
+}
+
+async function _fbSyncAll(data) {
+  if (!FB.ready()) throw new Error('Firebase non initialisé — configurez vos clés dans Admin Développeur.');
+  const results = {};
+  for (const [col, items] of Object.entries(data || {})) {
+    if (!Array.isArray(items) || !items.length) { results[col] = 0; continue; }
+    try {
+      // Batch par 500 (limite Firestore)
+      for (let i = 0; i < items.length; i += 400) {
+        const batch = FB.db().batch();
+        items.slice(i, i + 400).forEach(it => {
+          if (it.id) batch.set(FB.doc(col, it.id), it, { merge: true });
+        });
+        await batch.commit();
+      }
+      results[col] = items.length;
+    } catch(e) { results[col] = 'erreur: ' + e.message; }
+  }
+  return { ok: true, results };
+}
 </script>
 
 <body>
@@ -1943,8 +2188,8 @@ window.addEventListener('load', checkApiStatus);
           </div>
 
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-            <button class="btn-p" onclick="testSupabaseConnection()" style="background:#3ECF8E;border-color:#3ECF8E;color:#000">🔌 Tester la connexion</button>
-            <button class="btn-g sm" onclick="syncAllToSupabase()">☁️ Sync global → Supabase</button>
+            <button class="btn-p" onclick="testSupabaseConnection()" style="background:#FFA000;border-color:#FFA000;color:#000">🔌 Tester Firebase</button>
+            <button class="btn-g sm" onclick="syncAllToSupabase()">☁️ Sync global → Firebase</button>
           </div>
           <div id="adm-sb-feedback" style="margin-top:12px;font-size:.82rem;display:none"></div>
         </div>
@@ -1998,6 +2243,69 @@ alter table clients   enable row level security;
 alter table sales     enable row level security;
 alter table payments  enable row level security;</pre>
           <button class="btn-g sm" style="margin-top:10px" onclick="copySupabaseSchema()">📋 Copier le schéma</button>
+        </div>
+      </div>
+
+      <!-- ===== FIREBASE CONFIGURATION ===== -->
+      <div class="adm-card" style="margin-bottom:20px;border-color:rgba(255,160,0,0.25)">
+        <div class="adm-card-hdr" style="background:rgba(255,160,0,0.05)">
+          <h3>🔥 Firebase — Configuration & Temps réel</h3>
+          <span id="fb-status-badge" style="font-size:.75rem;padding:3px 10px;border-radius:100px;background:rgba(100,116,139,0.15);color:#64748B">⚙️ Non configuré</span>
+        </div>
+        <div class="adm-card-body" style="padding:20px">
+
+          <!-- Toggle ON/OFF -->
+          <div style="display:flex;align-items:center;justify-content:space-between;background:#0A0E16;border:1px solid rgba(255,160,0,0.2);border-radius:10px;padding:14px 18px;margin-bottom:18px">
+            <div>
+              <div style="font-size:.85rem;font-weight:700;color:#F0EDE8">Synchronisation temps réel</div>
+              <div style="font-size:.75rem;color:#64748B;margin-top:2px">Active les listeners <code style="color:#FFA000">onSnapshot</code> Firestore</div>
+            </div>
+            <button id="fb-toggle-btn" onclick="toggleFirebaseSync()" style="padding:8px 20px;border-radius:100px;font-size:.82rem;font-weight:700;border:2px solid rgba(255,160,0,0.4);background:rgba(255,160,0,0.08);color:#FFA000;cursor:pointer;transition:all .2s;white-space:nowrap">▶ Activer</button>
+          </div>
+
+          <!-- Champs config -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+            <div class="adm-fg">
+              <label>API Key</label>
+              <input id="fb-apiKey" type="password" placeholder="AIzaSy..." style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+            </div>
+            <div class="adm-fg">
+              <label>Project ID</label>
+              <input id="fb-projectId" placeholder="mon-projet-id" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+            </div>
+            <div class="adm-fg">
+              <label>Auth Domain</label>
+              <input id="fb-authDomain" placeholder="projet.firebaseapp.com" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+            </div>
+            <div class="adm-fg">
+              <label>Storage Bucket</label>
+              <input id="fb-storageBucket" placeholder="projet.appspot.com" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+            </div>
+            <div class="adm-fg">
+              <label>Messaging Sender ID</label>
+              <input id="fb-messagingSenderId" placeholder="123456789" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+            </div>
+            <div class="adm-fg">
+              <label>App ID</label>
+              <input id="fb-appId" placeholder="1:123:web:abc..." style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+            <button class="btn-p sm" onclick="saveFirebaseConfig()" style="background:#FFA000;border-color:#FFA000;color:#000">💾 Sauvegarder & Appliquer</button>
+            <button class="btn-g sm" onclick="clearFirebaseConfig()" style="color:#E74C3C;border-color:rgba(231,76,60,.3)">🗑 Effacer</button>
+            <button class="btn-g sm" onclick="toggleFbKeyVisibility()">👁 Révéler clés</button>
+          </div>
+          <div id="fb-save-feedback" style="font-size:.8rem;display:none;margin-bottom:14px"></div>
+
+          <!-- Appareils connectés -->
+          <div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:16px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+              <span style="font-size:.82rem;font-weight:700;color:#F0EDE8">📱 Appareils connectés</span>
+              <button class="btn-g sm" onclick="refreshFirebaseDevices()">🔄 Actualiser</button>
+            </div>
+            <div id="fb-devices-list" style="font-size:.8rem;color:#64748B">Activez Firebase pour voir les connexions en temps réel.</div>
+          </div>
         </div>
       </div>
 
@@ -4242,6 +4550,7 @@ const ADB = {
       this.set('config',{
         password_hash: DB._hash('admin2024'),
         token: 'DIGITALE',
+        admin_secret: 'DIGITALE_ADMIN',
         // ── Numéros de paiement Burkina Faso ──
         orange_num:    '76127809',
         orange_name:   'DIGITALE SOLUTION',
@@ -4262,6 +4571,12 @@ const ADB = {
     }
     if(!this.get('activity'))          this.set('activity',[]);
     if(!this.get('payment_requests'))  this.set('payment_requests',[]);
+    // Migration douce — ajouter admin_secret si absent
+    const _c = this.get('config');
+    if(_c && !_c.admin_secret){
+      _c.admin_secret = localStorage.getItem('ds_admin_secret') || 'DIGITALE_ADMIN';
+      this.set('config', _c);
+    }
   },
 
   getCfg(){return this.get('config')||{}},
@@ -4965,17 +5280,21 @@ function renewLicense(){
 
 function renderAdminDeveloper_sbStatus() {
   const badge = document.getElementById('adm-sb-status-badge');
-  if (badge) { badge.textContent = 'Non vérifié'; badge.style.color = '#64748B'; }
-  const urlDisplay = document.getElementById('adm-sb-url-display');
-  if (urlDisplay) urlDisplay.value = 'Configuré sur Vercel (SUPABASE_URL)';
-  // Stats DB locales
+  const conn  = document.getElementById('adm-sb-conn-display');
+  const url   = document.getElementById('adm-sb-url-display');
+  if (url) url.value = FB.ready() ? ('Firebase — ' + (FIREBASE_CONFIG.projectId || '?')) : 'Firebase non configuré';
+  if (badge) {
+    badge.textContent = FB.ready() ? '🔥 Firebase OK' : '⚙️ Non configuré';
+    badge.style.color = FB.ready() ? '#FFA000' : '#64748B';
+  }
+  if (conn) conn.value = FB.ready() ? '✅ Firestore connecté' : 'Configurez Firebase ci-dessous';
   const stats = document.getElementById('adm-db-stats');
   if (stats) {
     const counts = [
       {label:'Commerces', key:'merchants', color:'#E8730C'},
-      {label:'Produits', key:'products', color:'#4FC3F7'},
-      {label:'Ventes', key:'sales', color:'#2ECC71'},
-      {label:'Clients', key:'clients', color:'#9B59B6'}
+      {label:'Produits',  key:'products',  color:'#4FC3F7'},
+      {label:'Ventes',    key:'sales',     color:'#2ECC71'},
+      {label:'Clients',   key:'clients',   color:'#9B59B6'}
     ];
     stats.innerHTML = counts.map(c => {
       const n = (DB.get(c.key)||[]).length;
@@ -4988,38 +5307,44 @@ function renderAdminDeveloper_sbStatus() {
 }
 
 async function testSupabaseConnection() {
-  const fb = document.getElementById('adm-sb-feedback');
+  // Redirigé vers test Firebase
   const badge = document.getElementById('adm-sb-status-badge');
-  const conn = document.getElementById('adm-sb-conn-display');
-  showAdminSbFeedback('⏳ Test en cours...', 'info');
+  const conn  = document.getElementById('adm-sb-conn-display');
+  showAdminSbFeedback('⏳ Test Firebase en cours...', 'info');
+  if (!FB.ready()) {
+    showAdminSbFeedback('❌ Firebase non initialisé — configurez vos clés dans le panneau 🔥 Firebase ci-dessous.', 'error');
+    if (conn) conn.value = '❌ Non configuré';
+    return;
+  }
   try {
-    const res = await fetch(API_BASE + '/api/health');
-    const ct = res.headers.get('content-type') || '';
-    if (!ct.includes('application/json')) throw new Error('Réponse non-JSON — vérifiez Vercel Logs');
-    const data = await res.json();
-    const dbOk = data.checks?.db_connection?.startsWith('OK');
-    const modOk = data.checks?.supabase_module === 'OK';
-    if (dbOk) {
-      showAdminSbFeedback('✅ Supabase connecté ! ' + data.checks.db_connection, 'success');
-      if (badge) { badge.textContent = '🟢 Connecté'; badge.style.color = '#3ECF8E'; }
-      if (conn) conn.value = '✅ ' + data.checks.db_connection;
-    } else if (modOk) {
-      showAdminSbFeedback('⚠️ Module OK mais DB: ' + data.checks.db_connection, 'error');
-      if (conn) conn.value = '⚠️ ' + (data.checks.db_connection || 'Erreur');
-    } else {
-      showAdminSbFeedback('❌ Module Supabase absent : ' + data.checks.supabase_module, 'error');
-      if (conn) conn.value = '❌ Module manquant';
-    }
+    // Ping Firestore avec une lecture légère
+    await FB.db().collection('_ping').limit(1).get();
+    showAdminSbFeedback('✅ Firebase Firestore connecté ! Project: ' + FIREBASE_CONFIG.projectId, 'success');
+    if (badge) { badge.textContent = '🔥 Firebase OK'; badge.style.color = '#FFA000'; }
+    if (conn) conn.value = '✅ Firestore — ' + FIREBASE_CONFIG.projectId;
   } catch(e) {
-    showAdminSbFeedback('❌ ' + e.message, 'error');
-    if (conn) conn.value = '❌ ' + e.message;
+    // Erreur permission = connecté mais règles bloquent — c'est OK
+    if (e.code === 'permission-denied' || e.message.includes('Missing or insufficient')) {
+      showAdminSbFeedback('✅ Firebase connecté (règles actives) — project: ' + FIREBASE_CONFIG.projectId, 'success');
+      if (badge) { badge.textContent = '🔥 Firebase OK'; badge.style.color = '#FFA000'; }
+      if (conn) conn.value = '✅ Firestore connecté';
+    } else {
+      showAdminSbFeedback('❌ ' + e.message, 'error');
+      if (conn) conn.value = '❌ ' + e.message;
+    }
   }
 }
 
 async function syncAllToSupabase() {
+  // Redirigé vers sync Firebase
   const btn = document.querySelector('[onclick="syncAllToSupabase()"]');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Sync...'; }
-  showAdminSbFeedback('⏳ Préparation des données...', 'info');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Sync Firebase...'; }
+  showAdminSbFeedback('⏳ Préparation sync Firebase...', 'info');
+  if (!FB.ready()) {
+    showAdminSbFeedback('❌ Firebase non configuré — ajoutez vos clés dans le panneau 🔥 Firebase.', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '☁️ Sync global → Firebase'; }
+    return;
+  }
   try {
     const data = {
       merchants: DB.get('merchants') || [],
@@ -5029,15 +5354,15 @@ async function syncAllToSupabase() {
       configs:   DB.get('configs')   || [],
     };
     const total = Object.values(data).reduce((s, a) => s + a.length, 0);
-    showAdminSbFeedback('⏳ Envoi de ' + total + ' documents...', 'info');
-    const result = await API.admin('sync_all', { data });
-    const details = Object.entries(result.results || {}).map(([k,v]) => k+':'+v).join(' | ');
-    showAdminSbFeedback('✅ Sync complète — ' + details, 'success');
-    ADB.addActivity('supabase_sync', 'Sync globale Supabase — ' + total + ' docs');
+    showAdminSbFeedback('⏳ Envoi de ' + total + ' documents vers Firestore...', 'info');
+    const result = await _fbSyncAll(data);
+    const details = Object.entries(result.results || {}).map(([k,v]) => k + ':' + v).join(' | ');
+    showAdminSbFeedback('✅ Sync Firebase complète — ' + details, 'success');
+    ADB.addActivity('firebase_sync', 'Sync globale Firebase — ' + total + ' docs');
   } catch(e) {
     showAdminSbFeedback('❌ ' + e.message, 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '☁️ Sync global → Supabase'; }
+    if (btn) { btn.disabled = false; btn.textContent = '☁️ Sync global → Firebase'; }
   }
 }
 
@@ -5067,9 +5392,283 @@ function activateFirebaseSync() {}
 function loadMerchantDataFromFirebase() {}
 
 
+// ======================================================
+// FIREBASE PANEL JS — Admin Développeur
+// ======================================================
+let _fbSyncActive = false;
+let _fbSnapshotUnsubs = [];
+const _FB_DEVICES_KEY = 'ds_fb_devices';
+let _deviceId = null;
+
+function _getDeviceId() {
+  if (_deviceId) return _deviceId;
+  let id = sessionStorage.getItem('ds_device_id');
+  if (!id) {
+    id = 'DEV-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,5).toUpperCase();
+    sessionStorage.setItem('ds_device_id', id);
+  }
+  _deviceId = id;
+  return id;
+}
+
+function _getDeviceName() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad/.test(ua)) return '📱 iOS';
+  if (/Android/.test(ua))     return '📱 Android';
+  if (/Mac/.test(ua))         return '🖥 Mac';
+  if (/Windows/.test(ua))     return '💻 Windows';
+  return '🌐 Navigateur';
+}
+
+function _registerCurrentDevice() {
+  try {
+    const devices = JSON.parse(localStorage.getItem(_FB_DEVICES_KEY) || '[]');
+    const id = _getDeviceId();
+    const idx = devices.findIndex(d => d.id === id);
+    const entry = { id, name: _getDeviceName(), connectedAt: new Date().toISOString(), active: true };
+    if (idx !== -1) devices[idx] = entry; else devices.push(entry);
+    localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(devices));
+  } catch(e) {}
+}
+
+function _unregisterCurrentDevice() {
+  try {
+    const devices = JSON.parse(localStorage.getItem(_FB_DEVICES_KEY) || '[]');
+    const id = _getDeviceId();
+    const updated = devices.map(d => d.id === id ? { ...d, active: false, disconnectedAt: new Date().toISOString() } : d);
+    localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(updated));
+  } catch(e) {}
+}
+
+// BroadcastChannel — déconnexion forcée inter-appareils
+if (window.BroadcastChannel) {
+  try {
+    const _fbCtrl = new BroadcastChannel('ds_firebase_ctrl');
+    _fbCtrl.onmessage = (e) => {
+      if (e.data?.type === 'FORCE_DISCONNECT' && e.data.targetId === _getDeviceId()) {
+        stopFirebaseSync();
+        if (typeof showToast === 'function') showToast('⚠️ Connexion coupée par l\'administrateur.', 'error');
+      }
+    };
+  } catch(e) {}
+}
+
+function renderFirebasePanelState() {
+  const saved = localStorage.getItem('ds_firebase_cfg');
+  let cfg = {};
+  try { cfg = saved ? JSON.parse(saved) : {}; } catch(e) {}
+  ['apiKey','projectId','authDomain','storageBucket','messagingSenderId','appId'].forEach(f => {
+    const el = document.getElementById('fb-' + f);
+    if (el && cfg[f]) el.value = cfg[f];
+  });
+  updateFirebaseBadge();
+  refreshFirebaseDevices();
+  if (typeof renderAdminTokenStatus === 'function') renderAdminTokenStatus();
+}
+
+function updateFirebaseBadge() {
+  const badge = document.getElementById('fb-status-badge');
+  const btn   = document.getElementById('fb-toggle-btn');
+  if (!badge) return;
+  if (_fbSyncActive && FB.ready()) {
+    badge.textContent = '🔥 Actif — temps réel';
+    badge.style.cssText = 'font-size:.75rem;padding:3px 10px;border-radius:100px;background:rgba(255,160,0,0.15);color:#FFA000';
+    if (btn) { btn.textContent = '⏹ Désactiver'; btn.style.background = 'rgba(231,76,60,0.1)'; btn.style.borderColor = 'rgba(231,76,60,0.4)'; btn.style.color = '#E74C3C'; }
+  } else if (FB.ready()) {
+    badge.textContent = '⏳ Configuré — inactif';
+    badge.style.cssText = 'font-size:.75rem;padding:3px 10px;border-radius:100px;background:rgba(79,195,247,0.1);color:#4FC3F7';
+    if (btn) { btn.textContent = '▶ Activer'; btn.style.background = 'rgba(255,160,0,0.08)'; btn.style.borderColor = 'rgba(255,160,0,0.4)'; btn.style.color = '#FFA000'; }
+  } else {
+    badge.textContent = '⚙️ Non configuré';
+    badge.style.cssText = 'font-size:.75rem;padding:3px 10px;border-radius:100px;background:rgba(100,116,139,0.15);color:#64748B';
+    if (btn) { btn.textContent = '▶ Activer'; btn.style.background = 'rgba(255,160,0,0.08)'; btn.style.borderColor = 'rgba(255,160,0,0.4)'; btn.style.color = '#FFA000'; }
+  }
+}
+
+function saveFirebaseConfig() {
+  const fields = ['apiKey','projectId','authDomain','storageBucket','messagingSenderId','appId'];
+  const cfg = {};
+  const missing = [];
+  fields.forEach(f => {
+    const el = document.getElementById('fb-' + f);
+    cfg[f] = el ? el.value.trim() : '';
+    if (!cfg[f] && (f === 'apiKey' || f === 'projectId')) missing.push(f);
+  });
+  if (missing.length) { showFbFeedback('⚠️ ' + missing.join(', ') + ' sont obligatoires.', 'error'); return; }
+  localStorage.setItem('ds_firebase_cfg', JSON.stringify(cfg));
+  Object.assign(FIREBASE_CONFIG, cfg);
+  if (window._fbInit) {
+    try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn(e); }
+  }
+  showFbFeedback('✅ Config sauvegardée et appliquée — Firebase prêt !', 'success');
+  ADB.addActivity('firebase_config', 'Config Firebase — project: ' + cfg.projectId);
+  setTimeout(updateFirebaseBadge, 800);
+}
+
+function clearFirebaseConfig() {
+  if (!confirm('Effacer la config Firebase ? La sync temps réel sera coupée.')) return;
+  localStorage.removeItem('ds_firebase_cfg');
+  FIREBASE_CONFIG.apiKey = 'VOTRE_API_KEY';
+  stopFirebaseSync();
+  ['apiKey','projectId','authDomain','storageBucket','messagingSenderId','appId'].forEach(f => {
+    const el = document.getElementById('fb-' + f);
+    if (el) el.value = '';
+  });
+  showFbFeedback('🗑 Config effacée.', 'info');
+  updateFirebaseBadge();
+}
+
+function toggleFbKeyVisibility() {
+  const el = document.getElementById('fb-apiKey');
+  if (el) el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+function toggleFirebaseSync() {
+  if (_fbSyncActive) {
+    stopFirebaseSync();
+    showFbFeedback('⏹ Sync temps réel désactivée.', 'info');
+  } else {
+    startFirebaseSync();
+  }
+}
+
+function startFirebaseSync() {
+  if (!FB.ready()) { showFbFeedback('⚠️ Sauvegardez d\'abord votre config Firebase.', 'error'); return; }
+  _fbSyncActive = true;
+  window.FB_MODE = 'firebase';
+  _registerCurrentDevice();
+  // Démarrer listeners pour le marchand courant si connecté
+  const m = typeof Auth !== 'undefined' ? Auth.current() : null;
+  if (m) {
+    FB.listenMerchant(m.id, (col) => {
+      const active = document.querySelector('.section.active');
+      if (active) {
+        const sec = active.id.replace('s-','');
+        const r = { products:renderProducts, clients:renderClients, sales:renderSales, stock:renderStock, dashboard:renderDashboard };
+        if (typeof r[sec] === 'function') r[sec]();
+      }
+    });
+  }
+  showFbFeedback('🔥 Sync temps réel activée !', 'success');
+  ADB.addActivity('firebase_start', 'Sync Firebase temps réel activée');
+  updateFirebaseBadge();
+  refreshFirebaseDevices();
+}
+
+function stopFirebaseSync() {
+  _fbSyncActive = false;
+  window.FB_MODE = 'api';
+  FB.stopListening();
+  _fbSnapshotUnsubs.forEach(fn => { try { fn(); } catch(e) {} });
+  _fbSnapshotUnsubs = [];
+  _unregisterCurrentDevice();
+  updateFirebaseBadge();
+  refreshFirebaseDevices();
+  ADB.addActivity('firebase_stop', 'Sync Firebase désactivée');
+}
+
+function refreshFirebaseDevices() {
+  const container = document.getElementById('fb-devices-list');
+  if (!container) return;
+  try {
+    const devices = JSON.parse(localStorage.getItem(_FB_DEVICES_KEY) || '[]');
+    const myId = _getDeviceId();
+    if (!devices.length) {
+      container.innerHTML = '<span style="color:#475569">Aucun appareil enregistré. Activez Firebase pour voir les connexions ici.</span>';
+      return;
+    }
+    container.innerHTML = devices.map(d => {
+      const isMe     = d.id === myId;
+      const isActive = d.active;
+      const time     = new Date(d.connectedAt).toLocaleString('fr-FR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:#0A0E16;border-radius:8px;margin-bottom:6px;border:1px solid ${isActive ? 'rgba(255,160,0,0.2)' : 'rgba(255,255,255,0.04)'}">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:8px;height:8px;border-radius:50%;background:${isActive ? '#FFA000' : '#475569'};${isActive ? 'box-shadow:0 0 6px #FFA000' : ''}"></div>
+          <div>
+            <div style="font-size:.82rem;color:#F0EDE8;font-weight:600">${d.name}${isMe ? ' <span style="color:#E8730C;font-size:.7rem">(cet appareil)</span>' : ''}</div>
+            <div style="font-size:.7rem;color:#475569">${d.id} — ${isActive ? 'Connecté ' + time : 'Déconnecté'}</div>
+          </div>
+        </div>
+        ${!isMe && isActive ? `<button onclick="forceDisconnectDevice('${d.id}')" style="font-size:.72rem;padding:4px 10px;border-radius:6px;background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.3);color:#E74C3C;cursor:pointer">⏏ Déconnecter</button>` : ''}
+      </div>`;
+    }).join('');
+  } catch(e) {
+    container.innerHTML = '<span style="color:#E74C3C">Erreur : ' + e.message + '</span>';
+  }
+}
+
+function forceDisconnectDevice(deviceId) {
+  if (!confirm('Forcer la déconnexion de cet appareil ?')) return;
+  try {
+    const devices = JSON.parse(localStorage.getItem(_FB_DEVICES_KEY) || '[]');
+    const updated = devices.map(d => d.id === deviceId
+      ? { ...d, active: false, forceDisconnected: true, disconnectedAt: new Date().toISOString() }
+      : d);
+    localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(updated));
+    if (window.BroadcastChannel) {
+      const bc = new BroadcastChannel('ds_firebase_ctrl');
+      bc.postMessage({ type: 'FORCE_DISCONNECT', targetId: deviceId });
+      bc.close();
+    }
+    showFbFeedback('✅ Appareil déconnecté.', 'success');
+    ADB.addActivity('firebase_disconnect', 'Appareil déconnecté : ' + deviceId);
+    refreshFirebaseDevices();
+  } catch(e) { showFbFeedback('❌ ' + e.message, 'error'); }
+}
+
+function showFbFeedback(msg, type) {
+  const el = document.getElementById('fb-save-feedback');
+  if (!el) return;
+  const colors = { success:'#3ECF8E', error:'#E74C3C', info:'#4FC3F7' };
+  el.style.color = colors[type] || '#94A3B8';
+  el.textContent = msg;
+  el.style.display = 'block';
+  if (type !== 'info') setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
+
+// ======================================================
+// ADMIN SECRET TOKEN
+// ======================================================
+function saveAdminToken() {
+  const input = document.getElementById('adm-token-input');
+  if (!input) return;
+  const val = input.value.trim();
+  if (!val) { showAdminSbFeedback('⚠️ Token vide.', 'error'); return; }
+  const cfg = ADB.getCfg();
+  cfg.admin_secret = val;
+  ADB.set('config', cfg);
+  localStorage.setItem('ds_admin_secret', val);
+  input.value = '';
+  input.type = 'password';
+  const badge = document.getElementById('adm-token-saved-badge');
+  if (badge) { badge.style.display = 'inline'; setTimeout(() => badge.style.display = 'none', 3000); }
+  renderAdminTokenStatus();
+  showAdminSbFeedback('✅ Token sauvegardé !', 'success');
+  ADB.addActivity('token_update', 'Admin secret token mis à jour');
+}
+
+function toggleTokenVisibility() {
+  const input = document.getElementById('adm-token-input');
+  const eye   = document.getElementById('adm-token-eye');
+  if (!input) return;
+  if (input.type === 'password') { input.type = 'text'; if (eye) eye.textContent = '🙈'; }
+  else { input.type = 'password'; if (eye) eye.textContent = '👁'; }
+}
+
+function renderAdminTokenStatus() {
+  const cur = document.getElementById('adm-token-current');
+  if (!cur) return;
+  const cfg   = ADB.getCfg();
+  const token = cfg.admin_secret || localStorage.getItem('ds_admin_secret') || 'DIGITALE_ADMIN';
+  cur.innerHTML = token === 'DIGITALE_ADMIN'
+    ? '⚠️ Token par défaut — <span style="color:#F39C12">configurez votre token ci-dessus</span>'
+    : '🔑 Token actif : ' + token.substring(0,4) + '••••••••' + token.slice(-3) + ' <span style="color:#3ECF8E">✓</span>';
+}
+
 // ---- ADMIN DEVELOPER SECTION ----
 function renderAdminDeveloper() {
   renderAdminDeveloper_sbStatus();
+  renderFirebasePanelState();
   if (typeof renderPinMgmtList    === 'function') renderPinMgmtList();
   if (typeof renderAdminSubAlerts === 'function') renderAdminSubAlerts();
   if (typeof renderAdminCancelLog === 'function') renderAdminCancelLog();
@@ -5245,38 +5844,33 @@ function exportLocalDB() {
   showAdminToast('⬇️ Export téléchargé', 'success');
 }
 
-// Fonctions Firebase propriétaire (conservées pour compatibilité interne, non exposées en UI)
-function getFirebaseStatus() {
-  if (window.FB_MODE === 'firebase' && window._fbDb) return '🔥 Connecté';
-  if (FIREBASE_CONFIG.apiKey === 'VOTRE_API_KEY') return '⚙️ Non configuré';
-  return '⏳ En cours...';
-}
-function injectFirebaseSettingsUI() {} // no-op — Firebase est dans le panel admin
-function renderFirebaseStatus() {}     // no-op
+// Compatibilité — stubs gardés vides
+function initFirebase() {}
+function activateFirebaseSync() {}
+function loadMerchantDataFromFirebase() {}
+function getFirebaseStatus() { return FB.ready() ? '🔥 Connecté' : '⚙️ Non configuré'; }
+function injectFirebaseSettingsUI() {}
+function renderFirebaseStatus() {}
 
-// Charger config Firebase depuis localStorage et initialiser
-(function loadSavedFirebaseCfg() {
+// FIREBASE_CONFIG global — chargé depuis localStorage
+const FIREBASE_CONFIG = { apiKey:'VOTRE_API_KEY', authDomain:'', projectId:'', storageBucket:'', messagingSenderId:'', appId:'' };
+
+// Charger config sauvegardée et démarrer automatiquement
+(function loadAndStartFirebase() {
   const saved = localStorage.getItem('ds_firebase_cfg');
   if (!saved) return;
   try {
     const cfg = JSON.parse(saved);
-    if (cfg.apiKey && cfg.apiKey !== 'VOTRE_API_KEY') {
-      Object.assign(FIREBASE_CONFIG, cfg);
-    }
+    if (!cfg.apiKey || cfg.apiKey === 'VOTRE_API_KEY') return;
+    Object.assign(FIREBASE_CONFIG, cfg);
+    const doInit = () => {
+      if (window._fbInit && !window._fbDb) {
+        try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn('Firebase auto-init:', e); }
+      }
+    };
+    if (window._fbInit) doInit();
+    else window.addEventListener('firebase-sdk-loaded', doInit, { once: true });
   } catch(e) {}
-})();
-
-// Démarrer Firebase — le SDK est chargé statiquement dans le <head>
-// On attend que le SDK soit prêt puis on initialise
-(function startFirebase() {
-  if (FIREBASE_CONFIG.apiKey === 'VOTRE_API_KEY') return;
-  if (window._fbInit) {
-    window._fbInit(FIREBASE_CONFIG);
-  } else {
-    window.addEventListener('firebase-sdk-loaded', () => {
-      if (window._fbInit && !window._fbDb) window._fbInit(FIREBASE_CONFIG);
-    }, { once: true });
-  }
 })();
 
 // ============================================================
