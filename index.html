@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="fr" data-theme="dark">
 <head>
@@ -873,153 +874,193 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 const API_BASE = window.location.origin; // conservé pour compatibilité SW
 
 // FIREBASE_CONFIG global — déclaré ici, chargé depuis localStorage au boot
-const FIREBASE_CONFIG = {apiKey: "AIzaSyBrQy4VuncezPeZ6vPTaiTmTWxqTVQm1ZI",
-  authDomain: "commerce-3ae6e.firebaseapp.com",
-  projectId: "commerce-3ae6e",
-  storageBucket: "commerce-3ae6e.firebasestorage.app",
-  messagingSenderId: "946906333487",
-  appId: "1:946906333487:web:7a3aee75efeff49db921da"
+// Seule l'apiKey doit être saisie dans Admin Développeur si elle change
+// FIREBASE_CONFIG — clés projet posv5-78b92
+const FIREBASE_CONFIG = {
+  apiKey:            'AIzaSyALuXs5scz3O1uzC7PJ6Z-RY608ilFBMrg',
+  authDomain:        'posv5-78b92.firebaseapp.com',
+  projectId:         'posv5-78b92',
+  storageBucket:     'posv5-78b92.firebasestorage.app',
+  messagingSenderId: '508434695902',
+  appId:             '1:508434695902:web:e35a1eb0c5eec00106244f',
+  databaseURL:       'https://posv5-78b92-default-rtdb.europe-west1.firebasedatabase.app'
 };
 
 // ============================================================
-// FB — moteur Firestore (remplace toutes les routes /api/*)
-// Toutes les données sont dans Firestore, localStorage = cache
+// FB — moteur Firestore complet
+// • Lecture  : onSnapshot (temps réel) + pull au login
+// • Écriture : chaque insert/update/delete → Firestore immédiatement
+// • Fallback : si Firebase indisponible → localStorage seul, sans erreur
 // ============================================================
 const FB = {
 
-  // --- Utilitaires ---
-  db() { return window._fbDb; },
-  ready() { return !!window._fbDb; },
+  db()      { return window._fbDb; },
+  ready()   { return !!window._fbDb; },
+  col(name) { return this.db().collection(name); },
+  doc(c, id){ return this.db().collection(c).doc(id); },
 
-  col(name)    { return this.db().collection(name); },
-  doc(col, id) { return this.db().collection(col).doc(id); },
+  // Écriture silencieuse — ne bloque jamais l'UI
+  async write(col, id, data) {
+    if (!this.ready()) return false;
+    try {
+      await this.doc(col, id).set(data, { merge: true });
+      return true;
+    } catch(e) {
+      console.warn(`[FB] write ${col}/${id}:`, e.message);
+      return false;
+    }
+  },
+
+  async remove(col, id) {
+    if (!this.ready()) return false;
+    try {
+      await this.doc(col, id).delete();
+      return true;
+    } catch(e) {
+      console.warn(`[FB] delete ${col}/${id}:`, e.message);
+      return false;
+    }
+  },
 
   // --- MERCHANTS ---
   async getMerchant(id) {
-    const snap = await this.doc('merchants', id).get();
-    return snap.exists ? { id: snap.id, ...snap.data() } : null;
+    try {
+      const snap = await this.doc('merchants', id).get();
+      return snap.exists ? { id: snap.id, ...snap.data() } : null;
+    } catch(e) { console.warn('[FB] getMerchant:', e.message); return null; }
   },
   async getMerchantByPhone(tel) {
-    const snap = await this.col('merchants').where('telephone', '==', tel).limit(1).get();
-    return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+    try {
+      const snap = await this.col('merchants').where('telephone', '==', tel).limit(1).get();
+      return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+    } catch(e) { console.warn('[FB] getMerchantByPhone:', e.message); return null; }
   },
-  async saveMerchant(m) {
-    await this.doc('merchants', m.id).set(m, { merge: true });
-  },
+  async saveMerchant(m)  { return this.write('merchants', m.id, m); },
   async getAllMerchants() {
-    const snap = await this.col('merchants').get();
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    try {
+      const snap = await this.col('merchants').get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch(e) { console.warn('[FB] getAllMerchants:', e.message); return []; }
   },
 
   // --- CONFIGS ---
   async getConfig(merchantId) {
-    const snap = await this.col('configs').where('merchant_id', '==', merchantId).limit(1).get();
-    return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+    try {
+      const snap = await this.col('configs').where('merchant_id', '==', merchantId).limit(1).get();
+      return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+    } catch(e) { console.warn('[FB] getConfig:', e.message); return null; }
   },
   async saveConfig(cfg) {
     const id = cfg.id || cfg.merchant_id + '_cfg';
     cfg.id = id;
-    await this.doc('configs', id).set(cfg, { merge: true });
+    return this.write('configs', id, cfg);
   },
 
   // --- PRODUCTS ---
   async getProducts(merchantId) {
-    const snap = await this.col('products').where('merchant_id', '==', merchantId).get();
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    try {
+      const snap = await this.col('products').where('merchant_id', '==', merchantId).get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch(e) { console.warn('[FB] getProducts:', e.message); return []; }
   },
-  async saveProduct(item) {
-    await this.doc('products', item.id).set(item, { merge: true });
-  },
-  async deleteProduct(id) {
-    await this.doc('products', id).delete();
-  },
+  async saveProduct(item)  { return this.write('products', item.id, item); },
+  async deleteProduct(id)  { return this.remove('products', id); },
 
   // --- CLIENTS ---
   async getClients(merchantId) {
-    const snap = await this.col('clients').where('merchant_id', '==', merchantId).get();
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    try {
+      const snap = await this.col('clients').where('merchant_id', '==', merchantId).get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch(e) { console.warn('[FB] getClients:', e.message); return []; }
   },
-  async saveClient(item) {
-    await this.doc('clients', item.id).set(item, { merge: true });
-  },
+  async saveClient(item) { return this.write('clients', item.id, item); },
 
   // --- SALES ---
   async getSales(merchantId) {
-    const snap = await this.col('sales').where('merchant_id', '==', merchantId).get();
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    try {
+      const snap = await this.col('sales').where('merchant_id', '==', merchantId).get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch(e) { console.warn('[FB] getSales:', e.message); return []; }
   },
-  async saveSale(item) {
-    await this.doc('sales', item.id).set(item, { merge: true });
-  },
+  async saveSale(item) { return this.write('sales', item.id, item); },
 
-  // --- SYNC COMPLÈTE marchand → Firestore ---
+  // --- PUSH COMPLET localStorage → Firestore (batch 400 max) ---
   async pushAll(merchantId) {
     if (!this.ready()) return;
-    const batch = this.db().batch();
-    const m = DB.get('merchants').find(x => x.id === merchantId);
-    if (m) batch.set(this.doc('merchants', m.id), m, { merge: true });
-    const cfg = DB.get('configs').find(c => c.merchant_id === merchantId);
-    if (cfg) batch.set(this.doc('configs', cfg.id || merchantId + '_cfg'), cfg, { merge: true });
-    DB.forM('products', merchantId).forEach(p => batch.set(this.doc('products', p.id), p, { merge: true }));
-    DB.forM('clients',  merchantId).forEach(c => batch.set(this.doc('clients',  c.id), c, { merge: true }));
-    DB.forM('sales',    merchantId).forEach(s => batch.set(this.doc('sales',    s.id), s, { merge: true }));
-    await batch.commit();
+    try {
+      const items = [
+        ...DB.get('merchants').filter(x => x.id === merchantId).map(x => ['merchants', x]),
+        ...DB.get('configs').filter(c => c.merchant_id === merchantId).map(x => ['configs', x]),
+        ...DB.forM('products', merchantId).map(x => ['products', x]),
+        ...DB.forM('clients',  merchantId).map(x => ['clients',  x]),
+        ...DB.forM('sales',    merchantId).map(x => ['sales',    x]),
+      ];
+      for (let i = 0; i < items.length; i += 400) {
+        const batch = this.db().batch();
+        items.slice(i, i + 400).forEach(([col, doc]) => {
+          const id = doc.id || doc.merchant_id + '_cfg';
+          batch.set(this.doc(col, id), doc, { merge: true });
+        });
+        await batch.commit();
+      }
+    } catch(e) { console.warn('[FB] pushAll:', e.message); }
   },
 
-  // --- PULL Firestore → localStorage pour un marchand ---
+  // --- PULL Firestore → localStorage ---
   async pullAll(merchantId) {
     if (!this.ready()) return;
-    const [products, clients, sales, cfgData] = await Promise.all([
-      this.getProducts(merchantId),
-      this.getClients(merchantId),
-      this.getSales(merchantId),
-      this.getConfig(merchantId)
-    ]);
-    if (products.length) {
-      const all = DB.get('products').filter(r => r.merchant_id !== merchantId);
-      DB.set('products', [...all, ...products]);
-    }
-    if (clients.length) {
-      const all = DB.get('clients').filter(r => r.merchant_id !== merchantId);
-      DB.set('clients', [...all, ...clients]);
-    }
-    if (sales.length) {
-      const all = DB.get('sales').filter(r => r.merchant_id !== merchantId);
-      DB.set('sales', [...all, ...sales]);
-    }
-    if (cfgData) {
-      const all = DB.get('configs').filter(c => c.merchant_id !== merchantId);
-      DB.set('configs', [...all, cfgData]);
-    }
+    try {
+      const [products, clients, sales, cfgData] = await Promise.all([
+        this.getProducts(merchantId),
+        this.getClients(merchantId),
+        this.getSales(merchantId),
+        this.getConfig(merchantId)
+      ]);
+      const merge = (key, data) => {
+        if (!data.length) return;
+        DB.set(key, [...DB.get(key).filter(r => r.merchant_id !== merchantId), ...data]);
+      };
+      merge('products', products);
+      merge('clients',  clients);
+      merge('sales',    sales);
+      if (cfgData) {
+        DB.set('configs', [...DB.get('configs').filter(c => c.merchant_id !== merchantId), cfgData]);
+      }
+    } catch(e) { console.warn('[FB] pullAll:', e.message); }
   },
 
-  // --- TEMPS RÉEL — écouter les changements d'un marchand ---
+  // --- TEMPS RÉEL — onSnapshot sur products/clients/sales/configs ---
   _unsubs: [],
   listenMerchant(merchantId, onUpdate) {
     if (!this.ready()) return;
     this.stopListening();
-    const collections = ['products', 'clients', 'sales'];
-    collections.forEach(col => {
-      const unsub = this.col(col)
-        .where('merchant_id', '==', merchantId)
-        .onSnapshot(snap => {
-          snap.docChanges().forEach(change => {
-            const data = { id: change.doc.id, ...change.doc.data() };
-            if (change.type === 'removed') {
-              DB.set(col, DB.get(col).filter(r => r.id !== data.id));
-            } else {
-              const all = DB.get(col);
-              const idx = all.findIndex(r => r.id === data.id);
-              if (idx !== -1) all[idx] = data; else all.push(data);
-              DB.set(col, all);
-            }
-          });
-          if (onUpdate) onUpdate(col, snap.docChanges().length);
-        }, err => console.warn('FB listener error:', col, err));
-      this._unsubs.push(unsub);
+    const cols = ['products', 'clients', 'sales', 'configs'];
+    cols.forEach(col => {
+      try {
+        const unsub = this.col(col)
+          .where('merchant_id', '==', merchantId)
+          .onSnapshot(snap => {
+            let changed = 0;
+            snap.docChanges().forEach(change => {
+              const data = { id: change.doc.id, ...change.doc.data() };
+              const all  = DB.get(col);
+              if (change.type === 'removed') {
+                DB.set(col, all.filter(r => r.id !== data.id));
+              } else {
+                const idx = all.findIndex(r => r.id === data.id);
+                if (idx !== -1) all[idx] = data; else all.push(data);
+                DB.set(col, all);
+              }
+              changed++;
+            });
+            if (changed > 0 && onUpdate) onUpdate(col, changed);
+          }, err => console.warn('[FB] onSnapshot', col, err.message));
+        this._unsubs.push(unsub);
+      } catch(e) { console.warn('[FB] listen setup', col, e.message); }
     });
     console.log('🔥 Listeners temps réel actifs pour', merchantId);
   },
+
   stopListening() {
     this._unsubs.forEach(fn => { try { fn(); } catch(e) {} });
     this._unsubs = [];
@@ -2306,29 +2347,33 @@ alter table payments  enable row level security;</pre>
           <!-- Champs config -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
             <div class="adm-fg">
-              <label>API Key</label>
-              <input id="fb-apiKey" type="password" placeholder="AIzaSy..." style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <label>API Key <span style="color:#E74C3C">*</span></label>
+              <input id="fb-apiKey" type="password" placeholder="AIzaSy... (Console Firebase → Paramètres du projet)" style="width:100%;background:#0A0E16;border:1px solid rgba(255,100,100,0.3);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
             <div class="adm-fg">
               <label>Project ID</label>
-              <input id="fb-projectId" placeholder="mon-projet-id" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <input id="fb-projectId" placeholder="posv5-78b92" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
             <div class="adm-fg">
               <label>Auth Domain</label>
-              <input id="fb-authDomain" placeholder="projet.firebaseapp.com" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <input id="fb-authDomain" placeholder="posv5-78b92.firebaseapp.com" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
             <div class="adm-fg">
               <label>Storage Bucket</label>
-              <input id="fb-storageBucket" placeholder="projet.appspot.com" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <input id="fb-storageBucket" placeholder="posv5-78b92.firebasestorage.app" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
             <div class="adm-fg">
               <label>Messaging Sender ID</label>
-              <input id="fb-messagingSenderId" placeholder="123456789" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <input id="fb-messagingSenderId" placeholder="(optionnel)" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
             <div class="adm-fg">
               <label>App ID</label>
-              <input id="fb-appId" placeholder="1:123:web:abc..." style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <input id="fb-appId" placeholder="(optionnel)" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
+          </div>
+          <div style="background:rgba(255,160,0,0.06);border:1px solid rgba(255,160,0,0.2);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.75rem;color:#94A3B8;line-height:1.6">
+            📍 <strong style="color:#FFA000">Où trouver l'API Key ?</strong> Console Firebase → <em>posv5-78b92</em> → ⚙️ Paramètres du projet → Vos applications → SDK config<br/>
+            ℹ️ Project ID, Auth Domain et Storage Bucket sont pré-remplis automatiquement depuis <code style="color:#FFA000">posv5-78b92</code>. Seule l'<strong>API Key</strong> est obligatoire.
           </div>
 
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
@@ -5497,10 +5542,29 @@ function renderFirebasePanelState() {
   const saved = localStorage.getItem('ds_firebase_cfg');
   let cfg = {};
   try { cfg = saved ? JSON.parse(saved) : {}; } catch(e) {}
+
+  // Pré-remplir avec valeurs sauvegardées ou defaults posv5-78b92
+  const defaults = {
+    apiKey:            cfg.apiKey            || '',
+    projectId:         cfg.projectId         || 'posv5-78b92',
+    authDomain:        cfg.authDomain        || 'posv5-78b92.firebaseapp.com',
+    storageBucket:     cfg.storageBucket     || 'posv5-78b92.firebasestorage.app',
+    messagingSenderId: cfg.messagingSenderId || '',
+    appId:             cfg.appId             || '',
+  };
   ['apiKey','projectId','authDomain','storageBucket','messagingSenderId','appId'].forEach(f => {
     const el = document.getElementById('fb-' + f);
-    if (el && cfg[f]) el.value = cfg[f];
+    if (el) el.value = defaults[f];
   });
+
+  // Alerte si pas encore configuré
+  const feedback = document.getElementById('fb-save-feedback');
+  if (feedback && !cfg.apiKey) {
+    feedback.style.color = '#F39C12';
+    feedback.textContent = '⚠️ Saisissez votre API Key pour activer Firebase — les autres champs sont pré-remplis.';
+    feedback.style.display = 'block';
+  }
+
   updateFirebaseBadge();
   refreshFirebaseDevices();
   if (typeof renderAdminTokenStatus === 'function') renderAdminTokenStatus();
@@ -5526,24 +5590,28 @@ function updateFirebaseBadge() {
 }
 
 function saveFirebaseConfig() {
-  const fields = ['apiKey','projectId','authDomain','storageBucket','messagingSenderId','appId'];
-  const cfg = {};
-  const missing = [];
-  fields.forEach(f => {
+  const apiKey = document.getElementById('fb-apiKey')?.value.trim();
+  if (!apiKey) {
+    showFbFeedback('⚠️ API Key obligatoire — Console Firebase → Paramètres → Config SDK.', 'error');
+    return;
+  }
+  const projectId = document.getElementById('fb-projectId')?.value.trim() || 'posv5-78b92';
+  const cfg = {
+    apiKey,
+    projectId,
+    authDomain:        document.getElementById('fb-authDomain')?.value.trim()        || projectId + '.firebaseapp.com',
+    storageBucket:     document.getElementById('fb-storageBucket')?.value.trim()     || projectId + '.appspot.com',
+    messagingSenderId: document.getElementById('fb-messagingSenderId')?.value.trim() || '',
+    appId:             document.getElementById('fb-appId')?.value.trim()             || '',
+  };
+  ['projectId','authDomain','storageBucket'].forEach(f => {
     const el = document.getElementById('fb-' + f);
-    cfg[f] = el ? el.value.trim() : '';
-    if (!cfg[f] && (f === 'apiKey' || f === 'projectId')) missing.push(f);
+    if (el && !el.value.trim()) el.value = cfg[f];
   });
-  if (missing.length) { showFbFeedback('⚠️ ' + missing.join(', ') + ' sont obligatoires.', 'error'); return; }
-
   localStorage.setItem('ds_firebase_cfg', JSON.stringify(cfg));
   Object.assign(FIREBASE_CONFIG, cfg);
   showFbFeedback('⏳ Initialisation Firebase...', 'info');
-
-  // Lancer l'init (async)
   Promise.resolve().then(() => window._fbInit(FIREBASE_CONFIG)).catch(e => console.warn(e));
-
-  // Vérifier toutes les 200ms pendant 8 secondes max
   let attempts = 0;
   const check = setInterval(() => {
     attempts++;
@@ -5552,10 +5620,9 @@ function saveFirebaseConfig() {
       showFbFeedback('✅ Firebase connecté — cliquez ▶ Activer !', 'success');
       ADB.addActivity('firebase_config', 'Config Firebase — project: ' + cfg.projectId);
       updateFirebaseBadge();
-    } else if (attempts >= 40) { // 8 secondes
+    } else if (attempts >= 40) {
       clearInterval(check);
-      // Vérifier si une erreur est visible dans la console
-      showFbFeedback('❌ Connexion échouée — vérifiez dans la console F12 pour le détail de l\'erreur Firebase.', 'error');
+      showFbFeedback('❌ Échec — API Key incorrecte ou domaine non autorisé. Voir F12 Console.', 'error');
       updateFirebaseBadge();
     }
   }, 200);
@@ -6666,4 +6733,3 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
 
 </body>
 </html>
-
