@@ -52,7 +52,8 @@ function _waitForFirebaseSDK() {
 }
 
 window._fbInit = async function(cfg) {
-  if (window._fbInitPending) return;
+  // Ne bloquer que si une init est EN COURS *et* a déjà un résultat valide
+  if (window._fbInitPending && window._fbDb) return;
   window._fbInitPending = true;
   try {
     // Attendre que le SDK soit disponible
@@ -5663,7 +5664,12 @@ function startFirebaseSync() {
       return;
     }
     // Config présente mais _fbDb pas encore assigné — réessayer l'init
-    try { if (window._fbInit) window._fbInit(FIREBASE_CONFIG); } catch(e) {}
+    try { 
+      if (window._fbInit) { 
+        window._fbInitPending = false; 
+        window._fbInit(FIREBASE_CONFIG); 
+      } 
+    } catch(e) {}
     if (!FB.ready()) {
       showFbFeedback('⏳ Firebase s\'initialise, réessayez dans 2 secondes...', 'info');
       setTimeout(() => {
@@ -6000,11 +6006,16 @@ function renderFirebaseStatus() {}
     Object.assign(FIREBASE_CONFIG, cfg);
     const doInit = () => {
       if (window._fbInit && !window._fbDb) {
+        window._fbInitPending = false; // reset au cas où une init précédente aurait échoué
         try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn('Firebase auto-init:', e); }
       }
     };
-    if (window._fbInit) doInit();
-    else window.addEventListener('firebase-sdk-loaded', doInit, { once: true });
+    // Attendre DOMContentLoaded pour s'assurer que le SDK compat est chargé
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', doInit, { once: true });
+    } else {
+      doInit();
+    }
   } catch(e) {}
 })();
 
@@ -6733,3 +6744,4 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
 
 </body>
 </html>
+
