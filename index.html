@@ -1,6 +1,6 @@
 
 <!DOCTYPE html>
-<html lang="fr" data-theme="dark">ok 
+<html lang="fr" data-theme="dark">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
@@ -52,7 +52,7 @@ function _waitForFirebaseSDK() {
 }
 
 window._fbInit = async function(cfg) {
-  if (window._fbInitPending && window._fbDb) return;
+  if (window._fbInitPending) return; // init déjà en cours — éviter double init simultané
   window._fbInitPending = true;
   try {
     // Attendre que le SDK soit disponible
@@ -65,7 +65,7 @@ window._fbInit = async function(cfg) {
     }
     window._fbApp = firebase.initializeApp(cfg, 'ds_' + Date.now());
     window._fbDb  = firebase.firestore(window._fbApp);
-    window._fbDb.settings({ experimentalForceLongPolling: true, merge: true });
+    window._fbDb.settings({ experimentalAutoDetectLongPolling: true, merge: true });
     console.log('🔥 Firebase initialisé — project:', cfg.projectId);
     window.dispatchEvent(new Event('firebase-sdk-loaded'));
   } catch(e) {
@@ -1163,13 +1163,17 @@ async function _fbLogin({ telephone, password }) {
     }
   }
   // 2. Fallback localStorage (hors-ligne uniquement)
-  const m = Auth.login(telephone, password);
-  return { merchant: m, data: {
-    products: DB.forM('products', m.id),
-    clients:  DB.forM('clients',  m.id),
-    sales:    DB.forM('sales',    m.id),
-    configs:  DB.forM('clients',  m.id)
-  }};
+  try {
+    const m = Auth.login(telephone, password);
+    return { merchant: m, data: {
+      products: DB.forM('products', m.id),
+      clients:  DB.forM('clients',  m.id),
+      sales:    DB.forM('sales',    m.id),
+      configs:  DB.forM('configs',  m.id)
+    }};
+  } catch(e) {
+    throw new Error('Hors-ligne — ' + e.message);
+  }
 }
 
 async function _fbLoadData(merchantId) {
@@ -4443,7 +4447,16 @@ async function loginMerchant(e) {
     // Badge notifications stock
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(merchant.id);
     // Démarrer sync temps réel automatiquement
-    if (window._fbDb && !_fbSyncActive) _startRealtimeListeners(merchant.id);
+    if (window._fbDb) {
+      _startRealtimeListeners(merchant.id);
+    } else if (!window._fbResumeListenerRegistered) {
+      window._fbResumeListenerRegistered = true;
+      const _mid = merchant.id;
+      window.addEventListener('firebase-sdk-loaded', () => {
+        window._fbResumeListenerRegistered = false;
+        _startRealtimeListeners(_mid);
+      }, { once: true });
+    }
 
   } catch(err) {
     er.textContent = err.message;
@@ -5637,6 +5650,8 @@ function saveFirebaseConfig() {
   localStorage.setItem('ds_firebase_cfg', JSON.stringify(cfg));
   Object.assign(FIREBASE_CONFIG, cfg);
   showFbFeedback('⏳ Initialisation Firebase...', 'info');
+  // Reset le flag pour forcer la ré-initialisation avec la nouvelle config
+  window._fbInitPending = false;
   Promise.resolve().then(() => window._fbInit(FIREBASE_CONFIG)).catch(e => console.warn(e));
   let attempts = 0;
   const check = setInterval(() => {
@@ -5706,11 +5721,14 @@ function startFirebaseSync() {
   if (m) {
     FB.listenMerchant(m.id, (col) => {
       const active = document.querySelector('.section.active');
-      if (active) {
-        const sec = active.id.replace('s-','');
-        const r = { products:renderProducts, clients:renderClients, sales:renderSales, stock:renderStock, dashboard:renderDashboard };
-        if (typeof r[sec] === 'function') r[sec]();
+      const sec = active ? active.id.replace('s-','') : '';
+      const r = { products:renderProducts, clients:renderClients, sales:renderSales, stock:renderStock, dashboard:renderDashboard };
+      if (sec && typeof r[sec] === 'function') {
+        r[sec]();
+      } else if (typeof renderDashboard === 'function') {
+        renderDashboard();
       }
+      if (sec !== 'dashboard' && typeof renderDashboard === 'function') renderDashboard();
     });
   }
   showFbFeedback('🔥 Sync temps réel activée !', 'success');
@@ -5722,9 +5740,7 @@ function startFirebaseSync() {
 function stopFirebaseSync() {
   _fbSyncActive = false;
   window.FB_MODE = 'api';
-  FB.stopListening();
-  _fbSnapshotUnsubs.forEach(fn => { try { fn(); } catch(e) {} });
-  _fbSnapshotUnsubs = [];
+  FB.stopListening(); // arrête tous les onSnapshot via FB._unsubs
   _unregisterCurrentDevice();
   updateFirebaseBadge();
   refreshFirebaseDevices();
@@ -6036,8 +6052,7 @@ function renderFirebaseStatus() {}
   }
 
   const doInit = () => {
-    if (window._fbInit && !window._fbDb) {
-      window._fbInitPending = false;
+    if (window._fbInit && !window._fbDb && !window._fbInitPending) {
       try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn('Firebase auto-init:', e); }
     }
   };
@@ -6412,18 +6427,25 @@ API.post = async function(endpoint, body) {
 // SESSION PERSISTANTE — Reprise de session caissier
 // ============================================================
 function _startRealtimeListeners(merchantId) {
-  if (!window._fbDb || !merchantId || _fbSyncActive) return;
+  if (!window._fbDb || !merchantId) return;
+  if (_fbSyncActive) {
+    // Déjà actif pour ce même marchand — ne rien faire
+    return;
+  }
   _fbSyncActive = true;
   window.FB_MODE = 'firebase';
   _registerCurrentDevice();
   FB.listenMerchant(merchantId, (col) => {
     const active = document.querySelector('.section.active');
-    if (active) {
-      const sec = active.id.replace('s-','');
-      const r = { products:renderProducts, clients:renderClients, sales:renderSales, stock:renderStock, dashboard:renderDashboard };
-      if (typeof r[sec] === 'function') r[sec]();
+    const sec = active ? active.id.replace('s-','') : '';
+    const r = { products:renderProducts, clients:renderClients, sales:renderSales, stock:renderStock, dashboard:renderDashboard };
+    if (sec && typeof r[sec] === 'function') {
+      r[sec]();
+    } else if (typeof renderDashboard === 'function') {
+      renderDashboard();
     }
-    if (typeof renderDashboard === 'function') renderDashboard();
+    // Toujours rafraîchir le dashboard si ce n'est pas la section active
+    if (sec !== 'dashboard' && typeof renderDashboard === 'function') renderDashboard();
   });
   console.log('🔥 Sync temps réel démarrée pour', merchantId);
 }
@@ -6433,8 +6455,15 @@ function resumeSession() {
   if (!m) { showPage('page-landing'); return; }
   showPage('page-app');
   showToast('✅ Session reprise — Bienvenue ' + (m.proprietaire || m.nom_commerce) + ' !', 'success');
-  if (window._fbDb) _startRealtimeListeners(m.id);
-  else window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
+  if (window._fbDb) {
+    _startRealtimeListeners(m.id);
+  } else if (!window._fbResumeListenerRegistered) {
+    window._fbResumeListenerRegistered = true;
+    window.addEventListener('firebase-sdk-loaded', () => {
+      window._fbResumeListenerRegistered = false;
+      _startRealtimeListeners(m.id);
+    }, { once: true });
+  }
 }
 
 // Initialise la page login : affiche le bouton "Reprendre session" si une session est mémorisée
@@ -6783,8 +6812,15 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
     if (typeof renderDashboard !== 'undefined') renderDashboard();
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(m.id);
     // Démarrer sync temps réel (reload / session persistante)
-    if (window._fbDb) _startRealtimeListeners(m.id);
-    else window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
+    if (window._fbDb) {
+      _startRealtimeListeners(m.id);
+    } else if (!window._fbResumeListenerRegistered) {
+      window._fbResumeListenerRegistered = true;
+      window.addEventListener('firebase-sdk-loaded', () => {
+        window._fbResumeListenerRegistered = false;
+        _startRealtimeListeners(m.id);
+      }, { once: true });
+    }
   } else {
     showPage('page-landing');
   }
