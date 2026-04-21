@@ -52,7 +52,7 @@ function _waitForFirebaseSDK() {
 }
 
 window._fbInit = async function(cfg) {
-  if (window._fbInitPending) return;
+  if (window._fbInitPending && window._fbDb) return;
   window._fbInitPending = true;
   try {
     // Attendre que le SDK soit disponible
@@ -67,7 +67,8 @@ window._fbInit = async function(cfg) {
     window._fbDb  = firebase.firestore(window._fbApp);
     window._fbDb.settings({ experimentalForceLongPolling: true, merge: true });
     console.log('🔥 Firebase initialisé — project:', cfg.projectId);
-    window.dispatchEvent(new Event('firebase-sdk-loaded'));  } catch(e) {
+    window.dispatchEvent(new Event('firebase-sdk-loaded'));
+  } catch(e) {
     console.error('Firebase init error:', e.message);
     window._fbDb = null;
     window._fbApp = null;
@@ -1093,57 +1094,90 @@ window.addEventListener('load', () => setTimeout(checkApiStatus, 2000));
 // --- Implémentations des routes ---
 
 async function _fbRegister({ nom_commerce, proprietaire, telephone, ville, password, type }) {
-  // 1. Créer localement
+  // 1. Vérifier doublon dans Firestore d'abord (multi-appareil)
+  if (FB.ready()) {
+    try {
+      const existing = await FB.getMerchantByPhone(telephone);
+      if (existing) throw new Error('Ce numéro de téléphone est déjà utilisé.');
+    } catch(e) {
+      if (e.message.includes('déjà utilisé')) throw e;
+    }
+  }
+  // 2. Créer localement
   const m = Auth.register({ nom_commerce, proprietaire, telephone, ville, password, type });
   const config = DB.get('configs').find(c => c.merchant_id === m.id);
-  // 2. Pousser vers Firestore si disponible
-  if (FB.ready()) {
+  // 3. Pousser vers Firestore — attendre si nécessaire (max 5s)
+  const pushToFirestore = async () => {
     try {
       await FB.saveMerchant(m);
       if (config) await FB.saveConfig(config);
+      console.log('✅ Compte créé dans Firestore:', m.id);
     } catch(e) { console.warn('FB register push:', e); }
+  };
+  if (FB.ready()) {
+    await pushToFirestore();
+  } else {
+    await new Promise(resolve => {
+      const timeout = setTimeout(resolve, 5000);
+      window.addEventListener('firebase-sdk-loaded', () => { clearTimeout(timeout); resolve(); }, { once: true });
+    });
+    if (FB.ready()) await pushToFirestore();
+    else console.warn('Firebase indisponible — compte créé localement uniquement.');
   }
   return { merchant: m, config };
 }
 
 async function _fbLogin({ telephone, password }) {
-  // 1. Essayer Firestore en premier si disponible
+  // 1. Toujours essayer Firestore en priorité (source de vérité multi-appareil)
+  const tryFirestore = async () => {
+    const m = await FB.getMerchantByPhone(telephone);
+    if (!m) return null; // compte inconnu de Firestore
+    if (m.password !== DB._hash(password)) throw new Error('Numéro ou mot de passe incorrect.');
+    if (!m.actif) throw new Error('Compte désactivé.');
+    // Mettre à jour le cache local
+    const merchants = DB.get('merchants');
+    const idx = merchants.findIndex(x => x.id === m.id);
+    if (idx !== -1) merchants[idx] = m; else merchants.push(m);
+    DB.set('merchants', merchants);
+    // Charger toutes les données depuis Firestore
+    await FB.pullAll(m.id);
+    const data = {
+      products: DB.forM('products', m.id),
+      clients:  DB.forM('clients',  m.id),
+      sales:    DB.forM('sales',    m.id),
+      configs:  DB.forM('configs',  m.id)
+    };
+    return { merchant: m, data };
+  };
+
   if (FB.ready()) {
     try {
-      const m = await FB.getMerchantByPhone(telephone);
-      if (m) {
-        if (m.password !== DB._hash(password)) throw new Error('Numéro ou mot de passe incorrect.');
-        if (!m.actif) throw new Error('Compte désactivé.');
-        // Mettre à jour le cache local
-        const merchants = DB.get('merchants');
-        const idx = merchants.findIndex(x => x.id === m.id);
-        if (idx !== -1) merchants[idx] = m; else merchants.push(m);
-        DB.set('merchants', merchants);
-        // Charger toutes les données
-        await FB.pullAll(m.id);
-        // Démarrer listeners temps réel
-        FB.listenMerchant(m.id, (col, count) => {
-          const active = document.querySelector('.section.active');
-          if (active) {
-            const sec = active.id.replace('s-','');
-            const r = {products:renderProducts,clients:renderClients,sales:renderSales,stock:renderStock,dashboard:renderDashboard};
-            r[sec]?.();
-          }
-        });
-        const data = {
-          products: DB.forM('products', m.id),
-          clients:  DB.forM('clients',  m.id),
-          sales:    DB.forM('sales',    m.id),
-          configs:  DB.forM('configs',  m.id)
-        };
-        return { merchant: m, data };
-      }
+      const result = await tryFirestore();
+      if (result) return result;
+      // Firestore ne connaît pas ce compte — fallback local
     } catch(e) {
+      // Erreur d'auth (mdp incorrect, désactivé) → remonter immédiatement
       if (e.message.includes('incorrect') || e.message.includes('désactivé')) throw e;
-      console.warn('FB login fallback local:', e.message);
+      console.warn('FB login error:', e.message);
+    }
+  } else {
+    // Firebase pas prêt — attendre max 4s avant de tenter
+    const ready = await new Promise(resolve => {
+      if (window._fbDb) { resolve(true); return; }
+      const t = setTimeout(() => resolve(false), 4000);
+      window.addEventListener('firebase-sdk-loaded', () => { clearTimeout(t); resolve(true); }, { once: true });
+    });
+    if (ready) {
+      try {
+        const result = await tryFirestore();
+        if (result) return result;
+      } catch(e) {
+        if (e.message.includes('incorrect') || e.message.includes('désactivé')) throw e;
+      }
     }
   }
-  // 2. Fallback localStorage
+
+  // 2. Fallback localStorage (compte créé hors-ligne ou Firebase indisponible)
   const m = Auth.login(telephone, password);
   return { merchant: m, data: {
     products: DB.forM('products', m.id),
@@ -2547,8 +2581,7 @@ const DB = {
     const all=this.get(t);
     const r={...rec,id:'id_'+Date.now()+'_'+Math.random().toString(36).substr(2,6),merchant_id:mid,created_at:new Date().toISOString()};
     all.push(r);this.set(t,all);
-    // Sync Firestore immédiat
-    if(window._fbDb && window.FB) window.FB.write(t, r.id, r).catch(()=>{});
+    if(window._fbDb&&window.FB)window.FB.write(t,r.id,r).catch(()=>{});
     return r;
   },
   update(t,id,ups,mid){
@@ -2556,15 +2589,13 @@ const DB = {
     if(i===-1)return false;
     all[i]={...all[i],...ups,updated_at:new Date().toISOString()};
     this.set(t,all);
-    // Sync Firestore immédiat
-    if(window._fbDb && window.FB) window.FB.write(t, id, all[i]).catch(()=>{});
+    if(window._fbDb&&window.FB)window.FB.write(t,id,all[i]).catch(()=>{});
     return true;
   },
   delete(t,id,mid){
     const all=this.get(t),f=all.filter(r=>!(r.id===id&&r.merchant_id===mid));
     this.set(t,f);
-    // Sync Firestore immédiat
-    if(window._fbDb && window.FB) window.FB.remove(t, id).catch(()=>{});
+    if(window._fbDb&&window.FB)window.FB.remove(t,id).catch(()=>{});
     return f.length<all.length;
   },
   _hash(s){let h=0;for(let i=0;i<s.length;i++){h=Math.imul(31,h)+s.charCodeAt(i)|0;}return 'h'+Math.abs(h).toString(36)},
@@ -4427,7 +4458,7 @@ async function loginMerchant(e) {
     // Badge notifications stock
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(merchant.id);
 
-    // 4. Démarrer sync temps réel automatiquement si Firebase prêt
+    // Démarrer sync temps réel automatiquement
     if (window._fbDb && !_fbSyncActive) {
       _startRealtimeListeners(merchant.id);
     }
@@ -5526,13 +5557,13 @@ function _registerCurrentDevice() {
     const entry = { id, name: _getDeviceName(), connectedAt: new Date().toISOString(), active: true };
     if (idx !== -1) devices[idx] = entry; else devices.push(entry);
     localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(devices));
-    // Écrire aussi dans Firestore pour tracking inter-appareils
     if (window._fbDb) {
       const m = typeof Auth !== 'undefined' ? Auth.current() : null;
       if (m) {
-        window._fbDb.collection('devices').doc(id).set({
-          ...entry, merchant_id: m.id, userAgent: navigator.userAgent.slice(0, 100)
-        }, { merge: true }).catch(()=>{});
+        window._fbDb.collection('devices').doc(id).set(
+          { ...entry, merchant_id: m.id, userAgent: navigator.userAgent.slice(0,100) },
+          { merge: true }
+        ).catch(()=>{});
       }
     }
   } catch(e) {}
@@ -5685,7 +5716,7 @@ function startFirebaseSync() {
       return;
     }
     // Config présente mais _fbDb pas encore assigné — réessayer l'init
-    try { if (window._fbInit) window._fbInit(FIREBASE_CONFIG); } catch(e) {}
+    try { if (window._fbInit) { window._fbInitPending = false; window._fbInit(FIREBASE_CONFIG); } } catch(e) {}
     if (!FB.ready()) {
       showFbFeedback('⏳ Firebase s\'initialise, réessayez dans 2 secondes...', 'info');
       setTimeout(() => {
@@ -6022,11 +6053,15 @@ function renderFirebaseStatus() {}
     Object.assign(FIREBASE_CONFIG, cfg);
     const doInit = () => {
       if (window._fbInit && !window._fbDb) {
+        window._fbInitPending = false;
         try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn('Firebase auto-init:', e); }
       }
     };
-    if (window._fbInit) doInit();
-    else window.addEventListener('firebase-sdk-loaded', doInit, { once: true });
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', doInit, { once: true });
+    } else {
+      doInit();
+    }
   } catch(e) {}
 })();
 
@@ -6393,26 +6428,19 @@ API.post = async function(endpoint, body) {
 // ============================================================
 // SESSION PERSISTANTE — Reprise de session caissier
 // ============================================================
-// ============================================================
-// SYNC TEMPS RÉEL — helper central
-// Démarre les listeners onSnapshot pour le marchand connecté.
-// Appelé au login, à resumeSession, et au reload si session active.
-// ============================================================
 function _startRealtimeListeners(merchantId) {
   if (!window._fbDb || !merchantId) return;
-  if (_fbSyncActive) return; // déjà actif
+  if (_fbSyncActive) return;
   _fbSyncActive = true;
   window.FB_MODE = 'firebase';
   _registerCurrentDevice();
   FB.listenMerchant(merchantId, (col) => {
-    // Re-render la section active
     const active = document.querySelector('.section.active');
     if (active) {
       const sec = active.id.replace('s-','');
       const r = { products:renderProducts, clients:renderClients, sales:renderSales, stock:renderStock, dashboard:renderDashboard };
       if (typeof r[sec] === 'function') r[sec]();
     }
-    // Dashboard toujours à jour en background
     if (typeof renderDashboard === 'function') renderDashboard();
   });
   console.log('🔥 Sync temps réel démarrée pour', merchantId);
@@ -6423,11 +6451,9 @@ function resumeSession() {
   if (!m) { showPage('page-landing'); return; }
   showPage('page-app');
   showToast('✅ Session reprise — Bienvenue ' + (m.proprietaire || m.nom_commerce) + ' !', 'success');
-  // Démarrer sync si Firebase disponible
   if (window._fbDb) {
     _startRealtimeListeners(m.id);
   } else {
-    // Firebase pas encore init — attendre
     window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
   }
 }
@@ -6776,13 +6802,11 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
   if (m) {
     showPage('page-app');
     if (typeof renderDashboard !== 'undefined') renderDashboard();
-    // Badge notifications stock au démarrage
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(m.id);
-    // Démarrer sync temps réel si Firebase disponible (reload / session persistante)
+    // Démarrer sync temps réel si Firebase disponible
     if (window._fbDb) {
       _startRealtimeListeners(m.id);
     } else {
-      // Firebase s'initialise en async — attendre le signal
       window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
     }
   } else {
@@ -6794,4 +6818,3 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
 
 </body>
 </html>
-
