@@ -52,8 +52,7 @@ function _waitForFirebaseSDK() {
 }
 
 window._fbInit = async function(cfg) {
-  // Ne bloquer que si une init est EN COURS *et* a déjà un résultat valide
-  if (window._fbInitPending && window._fbDb) return;
+  if (window._fbInitPending) return;
   window._fbInitPending = true;
   try {
     // Attendre que le SDK soit disponible
@@ -68,8 +67,7 @@ window._fbInit = async function(cfg) {
     window._fbDb  = firebase.firestore(window._fbApp);
     window._fbDb.settings({ experimentalForceLongPolling: true, merge: true });
     console.log('🔥 Firebase initialisé — project:', cfg.projectId);
-    window.dispatchEvent(new Event('firebase-sdk-loaded'));
-  } catch(e) {
+    window.dispatchEvent(new Event('firebase-sdk-loaded'));  } catch(e) {
     console.error('Firebase init error:', e.message);
     window._fbDb = null;
     window._fbApp = null;
@@ -2548,17 +2546,26 @@ const DB = {
   insert(t,rec,mid){
     const all=this.get(t);
     const r={...rec,id:'id_'+Date.now()+'_'+Math.random().toString(36).substr(2,6),merchant_id:mid,created_at:new Date().toISOString()};
-    all.push(r);this.set(t,all);return r;
+    all.push(r);this.set(t,all);
+    // Sync Firestore immédiat
+    if(window._fbDb && window.FB) window.FB.write(t, r.id, r).catch(()=>{});
+    return r;
   },
   update(t,id,ups,mid){
     const all=this.get(t),i=all.findIndex(r=>r.id===id&&r.merchant_id===mid);
     if(i===-1)return false;
     all[i]={...all[i],...ups,updated_at:new Date().toISOString()};
-    this.set(t,all);return true;
+    this.set(t,all);
+    // Sync Firestore immédiat
+    if(window._fbDb && window.FB) window.FB.write(t, id, all[i]).catch(()=>{});
+    return true;
   },
   delete(t,id,mid){
     const all=this.get(t),f=all.filter(r=>!(r.id===id&&r.merchant_id===mid));
-    this.set(t,f);return f.length<all.length;
+    this.set(t,f);
+    // Sync Firestore immédiat
+    if(window._fbDb && window.FB) window.FB.remove(t, id).catch(()=>{});
+    return f.length<all.length;
   },
   _hash(s){let h=0;for(let i=0;i<s.length;i++){h=Math.imul(31,h)+s.charCodeAt(i)|0;}return 'h'+Math.abs(h).toString(36)},
   newMid(){return 'merchant_'+Date.now()+'_'+Math.random().toString(36).substr(2,8)}
@@ -4420,6 +4427,11 @@ async function loginMerchant(e) {
     // Badge notifications stock
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(merchant.id);
 
+    // 4. Démarrer sync temps réel automatiquement si Firebase prêt
+    if (window._fbDb && !_fbSyncActive) {
+      _startRealtimeListeners(merchant.id);
+    }
+
   } catch(err) {
     er.textContent = err.message;
     er.classList.remove('hidden');
@@ -5514,6 +5526,15 @@ function _registerCurrentDevice() {
     const entry = { id, name: _getDeviceName(), connectedAt: new Date().toISOString(), active: true };
     if (idx !== -1) devices[idx] = entry; else devices.push(entry);
     localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(devices));
+    // Écrire aussi dans Firestore pour tracking inter-appareils
+    if (window._fbDb) {
+      const m = typeof Auth !== 'undefined' ? Auth.current() : null;
+      if (m) {
+        window._fbDb.collection('devices').doc(id).set({
+          ...entry, merchant_id: m.id, userAgent: navigator.userAgent.slice(0, 100)
+        }, { merge: true }).catch(()=>{});
+      }
+    }
   } catch(e) {}
 }
 
@@ -5664,12 +5685,7 @@ function startFirebaseSync() {
       return;
     }
     // Config présente mais _fbDb pas encore assigné — réessayer l'init
-    try { 
-      if (window._fbInit) { 
-        window._fbInitPending = false; 
-        window._fbInit(FIREBASE_CONFIG); 
-      } 
-    } catch(e) {}
+    try { if (window._fbInit) window._fbInit(FIREBASE_CONFIG); } catch(e) {}
     if (!FB.ready()) {
       showFbFeedback('⏳ Firebase s\'initialise, réessayez dans 2 secondes...', 'info');
       setTimeout(() => {
@@ -6006,16 +6022,11 @@ function renderFirebaseStatus() {}
     Object.assign(FIREBASE_CONFIG, cfg);
     const doInit = () => {
       if (window._fbInit && !window._fbDb) {
-        window._fbInitPending = false; // reset au cas où une init précédente aurait échoué
         try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn('Firebase auto-init:', e); }
       }
     };
-    // Attendre DOMContentLoaded pour s'assurer que le SDK compat est chargé
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', doInit, { once: true });
-    } else {
-      doInit();
-    }
+    if (window._fbInit) doInit();
+    else window.addEventListener('firebase-sdk-loaded', doInit, { once: true });
   } catch(e) {}
 })();
 
@@ -6382,11 +6393,43 @@ API.post = async function(endpoint, body) {
 // ============================================================
 // SESSION PERSISTANTE — Reprise de session caissier
 // ============================================================
+// ============================================================
+// SYNC TEMPS RÉEL — helper central
+// Démarre les listeners onSnapshot pour le marchand connecté.
+// Appelé au login, à resumeSession, et au reload si session active.
+// ============================================================
+function _startRealtimeListeners(merchantId) {
+  if (!window._fbDb || !merchantId) return;
+  if (_fbSyncActive) return; // déjà actif
+  _fbSyncActive = true;
+  window.FB_MODE = 'firebase';
+  _registerCurrentDevice();
+  FB.listenMerchant(merchantId, (col) => {
+    // Re-render la section active
+    const active = document.querySelector('.section.active');
+    if (active) {
+      const sec = active.id.replace('s-','');
+      const r = { products:renderProducts, clients:renderClients, sales:renderSales, stock:renderStock, dashboard:renderDashboard };
+      if (typeof r[sec] === 'function') r[sec]();
+    }
+    // Dashboard toujours à jour en background
+    if (typeof renderDashboard === 'function') renderDashboard();
+  });
+  console.log('🔥 Sync temps réel démarrée pour', merchantId);
+}
+
 function resumeSession() {
   const m = Auth.current();
   if (!m) { showPage('page-landing'); return; }
   showPage('page-app');
   showToast('✅ Session reprise — Bienvenue ' + (m.proprietaire || m.nom_commerce) + ' !', 'success');
+  // Démarrer sync si Firebase disponible
+  if (window._fbDb) {
+    _startRealtimeListeners(m.id);
+  } else {
+    // Firebase pas encore init — attendre
+    window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
+  }
 }
 
 // Initialise la page login : affiche le bouton "Reprendre session" si une session est mémorisée
@@ -6735,6 +6778,13 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
     if (typeof renderDashboard !== 'undefined') renderDashboard();
     // Badge notifications stock au démarrage
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(m.id);
+    // Démarrer sync temps réel si Firebase disponible (reload / session persistante)
+    if (window._fbDb) {
+      _startRealtimeListeners(m.id);
+    } else {
+      // Firebase s'initialise en async — attendre le signal
+      window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
+    }
   } else {
     showPage('page-landing');
   }
