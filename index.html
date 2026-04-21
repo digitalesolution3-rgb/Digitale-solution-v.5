@@ -1,6 +1,6 @@
 
 <!DOCTYPE html>
-<html lang="fr" data-theme="dark">
+<html lang="fr" data-theme="dark">ok 
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
@@ -873,18 +873,19 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 <script>
 const API_BASE = window.location.origin; // conservé pour compatibilité SW
 
-// FIREBASE_CONFIG global — déclaré ici, chargé depuis localStorage au boot
-// Seule l'apiKey doit être saisie dans Admin Développeur si elle change
-// FIREBASE_CONFIG — clés projet posv5-78b92
+// ============================================================
+// 🔥 CONFIGURATION FIREBASE — À MODIFIER ICI
+// Console Firebase → Paramètres du projet → Vos applications → SDK config
+// ============================================================
 const FIREBASE_CONFIG = {
-  apiKey:            'AIzaSyALuXs5scz3O1uzC7PJ6Z-RY608ilFBMrg',
-  authDomain:        'posv5-78b92.firebaseapp.com',
-  projectId:         'posv5-78b92',
-  storageBucket:     'posv5-78b92.firebasestorage.app',
-  messagingSenderId: '508434695902',
-  appId:             '1:508434695902:web:e35a1eb0c5eec00106244f',
-  databaseURL:       'https://posv5-78b92-default-rtdb.europe-west1.firebasedatabase.app'
+  apiKey: "AIzaSyBrQy4VuncezPeZ6vPTaiTmTWxqTVQm1ZI",
+  authDomain: "commerce-3ae6e.firebaseapp.com",
+  projectId: "commerce-3ae6e",
+  storageBucket: "commerce-3ae6e.firebasestorage.app",
+  messagingSenderId: "946906333487",
+  appId: "1:946906333487:web:d6cd511e80a3a0d0b921da"
 };
+// ============================================================
 
 // ============================================================
 // FB — moteur Firestore complet
@@ -1094,7 +1095,15 @@ window.addEventListener('load', () => setTimeout(checkApiStatus, 2000));
 // --- Implémentations des routes ---
 
 async function _fbRegister({ nom_commerce, proprietaire, telephone, ville, password, type }) {
-  // 1. Vérifier doublon dans Firestore d'abord (multi-appareil)
+  // Attendre Firebase si pas encore prêt (max 6s) — essentiel sur nouvel appareil
+  if (!FB.ready()) {
+    await new Promise(resolve => {
+      if (window._fbDb) { resolve(); return; }
+      const t = setTimeout(resolve, 6000);
+      window.addEventListener('firebase-sdk-loaded', () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+  }
+  // Vérifier doublon dans Firestore (multi-appareil)
   if (FB.ready()) {
     try {
       const existing = await FB.getMerchantByPhone(telephone);
@@ -1103,87 +1112,63 @@ async function _fbRegister({ nom_commerce, proprietaire, telephone, ville, passw
       if (e.message.includes('déjà utilisé')) throw e;
     }
   }
-  // 2. Créer localement
+  // Créer localement
   const m = Auth.register({ nom_commerce, proprietaire, telephone, ville, password, type });
   const config = DB.get('configs').find(c => c.merchant_id === m.id);
-  // 3. Pousser vers Firestore — attendre si nécessaire (max 5s)
-  const pushToFirestore = async () => {
+  // Pousser vers Firestore
+  if (FB.ready()) {
     try {
       await FB.saveMerchant(m);
       if (config) await FB.saveConfig(config);
       console.log('✅ Compte créé dans Firestore:', m.id);
     } catch(e) { console.warn('FB register push:', e); }
-  };
-  if (FB.ready()) {
-    await pushToFirestore();
-  } else {
-    await new Promise(resolve => {
-      const timeout = setTimeout(resolve, 5000);
-      window.addEventListener('firebase-sdk-loaded', () => { clearTimeout(timeout); resolve(); }, { once: true });
-    });
-    if (FB.ready()) await pushToFirestore();
-    else console.warn('Firebase indisponible — compte créé localement uniquement.');
   }
   return { merchant: m, config };
 }
 
 async function _fbLogin({ telephone, password }) {
-  // 1. Toujours essayer Firestore en priorité (source de vérité multi-appareil)
-  const tryFirestore = async () => {
-    const m = await FB.getMerchantByPhone(telephone);
-    if (!m) return null; // compte inconnu de Firestore
-    if (m.password !== DB._hash(password)) throw new Error('Numéro ou mot de passe incorrect.');
-    if (!m.actif) throw new Error('Compte désactivé.');
-    // Mettre à jour le cache local
-    const merchants = DB.get('merchants');
-    const idx = merchants.findIndex(x => x.id === m.id);
-    if (idx !== -1) merchants[idx] = m; else merchants.push(m);
-    DB.set('merchants', merchants);
-    // Charger toutes les données depuis Firestore
-    await FB.pullAll(m.id);
-    const data = {
-      products: DB.forM('products', m.id),
-      clients:  DB.forM('clients',  m.id),
-      sales:    DB.forM('sales',    m.id),
-      configs:  DB.forM('configs',  m.id)
-    };
-    return { merchant: m, data };
-  };
-
+  // Attendre Firebase si pas encore prêt (max 6s) — essentiel sur nouvel appareil
+  if (!FB.ready()) {
+    await new Promise(resolve => {
+      if (window._fbDb) { resolve(); return; }
+      const t = setTimeout(resolve, 6000);
+      window.addEventListener('firebase-sdk-loaded', () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+  }
+  // 1. Firestore = source de vérité (multi-appareil)
   if (FB.ready()) {
     try {
-      const result = await tryFirestore();
-      if (result) return result;
-      // Firestore ne connaît pas ce compte — fallback local
+      const m = await FB.getMerchantByPhone(telephone);
+      if (m) {
+        if (m.password !== DB._hash(password)) throw new Error('Numéro ou mot de passe incorrect.');
+        if (!m.actif) throw new Error('Compte désactivé.');
+        // Mettre à jour le cache local
+        const merchants = DB.get('merchants');
+        const idx = merchants.findIndex(x => x.id === m.id);
+        if (idx !== -1) merchants[idx] = m; else merchants.push(m);
+        DB.set('merchants', merchants);
+        await FB.pullAll(m.id);
+        const data = {
+          products: DB.forM('products', m.id),
+          clients:  DB.forM('clients',  m.id),
+          sales:    DB.forM('sales',    m.id),
+          configs:  DB.forM('configs',  m.id)
+        };
+        return { merchant: m, data };
+      }
+      // Compte introuvable dans Firestore — fallback local (mode hors-ligne)
     } catch(e) {
-      // Erreur d'auth (mdp incorrect, désactivé) → remonter immédiatement
       if (e.message.includes('incorrect') || e.message.includes('désactivé')) throw e;
       console.warn('FB login error:', e.message);
     }
-  } else {
-    // Firebase pas prêt — attendre max 4s avant de tenter
-    const ready = await new Promise(resolve => {
-      if (window._fbDb) { resolve(true); return; }
-      const t = setTimeout(() => resolve(false), 4000);
-      window.addEventListener('firebase-sdk-loaded', () => { clearTimeout(t); resolve(true); }, { once: true });
-    });
-    if (ready) {
-      try {
-        const result = await tryFirestore();
-        if (result) return result;
-      } catch(e) {
-        if (e.message.includes('incorrect') || e.message.includes('désactivé')) throw e;
-      }
-    }
   }
-
-  // 2. Fallback localStorage (compte créé hors-ligne ou Firebase indisponible)
+  // 2. Fallback localStorage (hors-ligne uniquement)
   const m = Auth.login(telephone, password);
   return { merchant: m, data: {
     products: DB.forM('products', m.id),
     clients:  DB.forM('clients',  m.id),
     sales:    DB.forM('sales',    m.id),
-    configs:  DB.forM('configs',  m.id)
+    configs:  DB.forM('clients',  m.id)
   }};
 }
 
@@ -4457,11 +4442,8 @@ async function loginMerchant(e) {
     showToast('✅ Connecté !', 'success');
     // Badge notifications stock
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(merchant.id);
-
     // Démarrer sync temps réel automatiquement
-    if (window._fbDb && !_fbSyncActive) {
-      _startRealtimeListeners(merchant.id);
-    }
+    if (window._fbDb && !_fbSyncActive) _startRealtimeListeners(merchant.id);
 
   } catch(err) {
     er.textContent = err.message;
@@ -5557,15 +5539,6 @@ function _registerCurrentDevice() {
     const entry = { id, name: _getDeviceName(), connectedAt: new Date().toISOString(), active: true };
     if (idx !== -1) devices[idx] = entry; else devices.push(entry);
     localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(devices));
-    if (window._fbDb) {
-      const m = typeof Auth !== 'undefined' ? Auth.current() : null;
-      if (m) {
-        window._fbDb.collection('devices').doc(id).set(
-          { ...entry, merchant_id: m.id, userAgent: navigator.userAgent.slice(0,100) },
-          { merge: true }
-        ).catch(()=>{});
-      }
-    }
   } catch(e) {}
 }
 
@@ -5716,7 +5689,7 @@ function startFirebaseSync() {
       return;
     }
     // Config présente mais _fbDb pas encore assigné — réessayer l'init
-    try { if (window._fbInit) { window._fbInitPending = false; window._fbInit(FIREBASE_CONFIG); } } catch(e) {}
+    try { if (window._fbInit) window._fbInit(FIREBASE_CONFIG); } catch(e) {}
     if (!FB.ready()) {
       showFbFeedback('⏳ Firebase s\'initialise, réessayez dans 2 secondes...', 'info');
       setTimeout(() => {
@@ -6043,26 +6016,36 @@ function getFirebaseStatus() { return FB.ready() ? '🔥 Connecté' : '⚙️ No
 function injectFirebaseSettingsUI() {}
 function renderFirebaseStatus() {}
 
-// Charger config sauvegardée et démarrer automatiquement
+// Charger config et démarrer Firebase automatiquement au boot
 (function loadAndStartFirebase() {
-  const saved = localStorage.getItem('ds_firebase_cfg');
-  if (!saved) return;
+  // 1. Si une config a été sauvegardée via le panel Admin, elle prend la priorité
   try {
-    const cfg = JSON.parse(saved);
-    if (!cfg.apiKey || cfg.apiKey === 'VOTRE_API_KEY') return;
-    Object.assign(FIREBASE_CONFIG, cfg);
-    const doInit = () => {
-      if (window._fbInit && !window._fbDb) {
-        window._fbInitPending = false;
-        try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn('Firebase auto-init:', e); }
+    const saved = localStorage.getItem('ds_firebase_cfg');
+    if (saved) {
+      const cfg = JSON.parse(saved);
+      if (cfg.apiKey && cfg.apiKey !== 'VOTRE_API_KEY') {
+        Object.assign(FIREBASE_CONFIG, cfg);
       }
-    };
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', doInit, { once: true });
-    } else {
-      doInit();
     }
   } catch(e) {}
+
+  // 2. Lancer Firebase avec la config disponible (hardcodée ou sauvegardée)
+  if (!FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === 'VOTRE_API_KEY') {
+    console.warn('⚠️ Firebase : aucune apiKey configurée dans FIREBASE_CONFIG.');
+    return;
+  }
+
+  const doInit = () => {
+    if (window._fbInit && !window._fbDb) {
+      window._fbInitPending = false;
+      try { window._fbInit(FIREBASE_CONFIG); } catch(e) { console.warn('Firebase auto-init:', e); }
+    }
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', doInit, { once: true });
+  } else {
+    doInit();
+  }
 })();
 
 // ============================================================
@@ -6429,8 +6412,7 @@ API.post = async function(endpoint, body) {
 // SESSION PERSISTANTE — Reprise de session caissier
 // ============================================================
 function _startRealtimeListeners(merchantId) {
-  if (!window._fbDb || !merchantId) return;
-  if (_fbSyncActive) return;
+  if (!window._fbDb || !merchantId || _fbSyncActive) return;
   _fbSyncActive = true;
   window.FB_MODE = 'firebase';
   _registerCurrentDevice();
@@ -6451,11 +6433,8 @@ function resumeSession() {
   if (!m) { showPage('page-landing'); return; }
   showPage('page-app');
   showToast('✅ Session reprise — Bienvenue ' + (m.proprietaire || m.nom_commerce) + ' !', 'success');
-  if (window._fbDb) {
-    _startRealtimeListeners(m.id);
-  } else {
-    window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
-  }
+  if (window._fbDb) _startRealtimeListeners(m.id);
+  else window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
 }
 
 // Initialise la page login : affiche le bouton "Reprendre session" si une session est mémorisée
@@ -6803,12 +6782,9 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
     showPage('page-app');
     if (typeof renderDashboard !== 'undefined') renderDashboard();
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(m.id);
-    // Démarrer sync temps réel si Firebase disponible
-    if (window._fbDb) {
-      _startRealtimeListeners(m.id);
-    } else {
-      window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
-    }
+    // Démarrer sync temps réel (reload / session persistante)
+    if (window._fbDb) _startRealtimeListeners(m.id);
+    else window.addEventListener('firebase-sdk-loaded', () => _startRealtimeListeners(m.id), { once: true });
   } else {
     showPage('page-landing');
   }
@@ -6818,3 +6794,4 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
 
 </body>
 </html>
+
