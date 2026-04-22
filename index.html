@@ -2585,7 +2585,7 @@ const DB = {
     const all=this.get(t);
     const r={...rec,id:'id_'+Date.now()+'_'+Math.random().toString(36).substr(2,6),merchant_id:mid,created_at:new Date().toISOString()};
     all.push(r);this.set(t,all);
-    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.write(t,r.id,r).catch(()=>{});
+    if(window._fbDb&&typeof FB!=="undefined")FB.write(t,r.id,r).catch(e=>console.error('[DB.insert FB]',t,e.message));
     return r;
   },
   update(t,id,ups,mid){
@@ -2593,13 +2593,13 @@ const DB = {
     if(i===-1)return false;
     all[i]={...all[i],...ups,updated_at:new Date().toISOString()};
     this.set(t,all);
-    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.write(t,id,all[i]).catch(()=>{});
+    if(window._fbDb&&typeof FB!=="undefined")FB.write(t,id,all[i]).catch(e=>console.error('[DB.update FB]',t,e.message));
     return true;
   },
   delete(t,id,mid){
     const all=this.get(t),f=all.filter(r=>!(r.id===id&&r.merchant_id===mid));
     this.set(t,f);
-    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.remove(t,id).catch(()=>{});
+    if(window._fbDb&&typeof FB!=="undefined")FB.remove(t,id).catch(e=>console.error('[DB.delete FB]',t,e.message));
     return f.length<all.length;
   },
   _hash(s){let h=0;for(let i=0;i<s.length;i++){h=Math.imul(31,h)+s.charCodeAt(i)|0;}return 'h'+Math.abs(h).toString(36)},
