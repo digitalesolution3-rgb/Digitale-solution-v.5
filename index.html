@@ -885,6 +885,7 @@ const FIREBASE_CONFIG = {
   messagingSenderId: "946906333487",
   appId: "1:946906333487:web:d6cd511e80a3a0d0b921da"
 };
+window.FIREBASE_CONFIG = FIREBASE_CONFIG;
 // ============================================================
 
 // ============================================================
@@ -901,7 +902,7 @@ const FB = {
   doc(c, id){ return this.db().collection(c).doc(id); },
 
   // Écriture silencieuse — ne bloque jamais l'UI
-  async write(col, id, data) {
+  write: async function(col, id, data) {
     if (!this.ready()) return false;
     try {
       await this.doc(col, id).set(data, { merge: true });
@@ -912,7 +913,7 @@ const FB = {
     }
   },
 
-  async remove(col, id) {
+  remove: async function(col, id) {
     if (!this.ready()) return false;
     try {
       await this.doc(col, id).delete();
@@ -924,20 +925,20 @@ const FB = {
   },
 
   // --- MERCHANTS ---
-  async getMerchant(id) {
+  getMerchant: async function(id) {
     try {
       const snap = await this.doc('merchants', id).get();
       return snap.exists ? { id: snap.id, ...snap.data() } : null;
     } catch(e) { console.warn('[FB] getMerchant:', e.message); return null; }
   },
-  async getMerchantByPhone(tel) {
+  getMerchantByPhone: async function(tel) {
     try {
       const snap = await this.col('merchants').where('telephone', '==', tel).limit(1).get();
       return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
     } catch(e) { console.warn('[FB] getMerchantByPhone:', e.message); return null; }
   },
   async saveMerchant(m)  { return this.write('merchants', m.id, m); },
-  async getAllMerchants() {
+  getAllMerchants: async function() {
     try {
       const snap = await this.col('merchants').get();
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -945,20 +946,20 @@ const FB = {
   },
 
   // --- CONFIGS ---
-  async getConfig(merchantId) {
+  getConfig: async function(merchantId) {
     try {
       const snap = await this.col('configs').where('merchant_id', '==', merchantId).limit(1).get();
       return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
     } catch(e) { console.warn('[FB] getConfig:', e.message); return null; }
   },
-  async saveConfig(cfg) {
+  saveConfig: async function(cfg) {
     const id = cfg.id || cfg.merchant_id + '_cfg';
     cfg.id = id;
     return this.write('configs', id, cfg);
   },
 
   // --- PRODUCTS ---
-  async getProducts(merchantId) {
+  getProducts: async function(merchantId) {
     try {
       const snap = await this.col('products').where('merchant_id', '==', merchantId).get();
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -968,25 +969,25 @@ const FB = {
   async deleteProduct(id)  { return this.remove('products', id); },
 
   // --- CLIENTS ---
-  async getClients(merchantId) {
+  getClients: async function(merchantId) {
     try {
       const snap = await this.col('clients').where('merchant_id', '==', merchantId).get();
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch(e) { console.warn('[FB] getClients:', e.message); return []; }
   },
-  async saveClient(item) { return this.write('clients', item.id, item); },
+  saveClient: async function(item) { return this.write('clients', item.id, item); },
 
   // --- SALES ---
-  async getSales(merchantId) {
+  getSales: async function(merchantId) {
     try {
       const snap = await this.col('sales').where('merchant_id', '==', merchantId).get();
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch(e) { console.warn('[FB] getSales:', e.message); return []; }
   },
-  async saveSale(item) { return this.write('sales', item.id, item); },
+  saveSale: async function(item) { return this.write('sales', item.id, item); },
 
   // --- PUSH COMPLET localStorage → Firestore (batch 400 max) ---
-  async pushAll(merchantId) {
+  pushAll: async function(merchantId) {
     if (!this.ready()) return;
     try {
       const items = [
@@ -1008,7 +1009,7 @@ const FB = {
   },
 
   // --- PULL Firestore → localStorage ---
-  async pullAll(merchantId) {
+  pullAll: async function(merchantId) {
     if (!this.ready()) return;
     try {
       const [products, clients, sales, cfgData] = await Promise.all([
@@ -1049,7 +1050,14 @@ const FB = {
                 DB.set(col, all.filter(r => r.id !== data.id));
               } else {
                 const idx = all.findIndex(r => r.id === data.id);
-                if (idx !== -1) all[idx] = data; else all.push(data);
+                if (idx !== -1) {
+                  // FIX: ne remplacer que si la version distante est plus récente
+                  const localTs  = all[idx].updated_at || all[idx].created_at || '0';
+                  const remoteTs = data.updated_at     || data.created_at     || '0';
+                  if (remoteTs >= localTs) all[idx] = data;
+                } else {
+                  all.push(data);
+                }
                 DB.set(col, all);
               }
               changed++;
@@ -1067,25 +1075,27 @@ const FB = {
     this._unsubs = [];
   }
 };
+window.FB = FB;
 
 // API stub — toutes les routes /api/* redirigent vers FB ou localStorage
 // Garde la compatibilité avec les appels existants dans le code
 const API = {
-  async post(endpoint, body) {
+  post: async function(endpoint, body) {
     if (endpoint === 'register') return _fbRegister(body);
     if (endpoint === 'login')    return _fbLogin(body);
     if (endpoint === 'sync')     return _fbSync(body);
     return { ok: true };
   },
-  async get(endpoint, params = {}) {
+  get: async function(endpoint, params = {}) {
     if (endpoint === 'data') return _fbLoadData(params.merchant_id);
     return { data: null };
   },
-  async admin(action, body = {}) {
+  admin: async function(action, body = {}) {
     if (action === 'sync_all') return _fbSyncAll(body.data);
     return { ok: true };
   }
 };
+window.API = API;
 
 // Pas de vrai ping API
 let API_ONLINE = true;
@@ -1377,7 +1387,7 @@ async function _fbSyncAll(data) {
       <!-- GÉRANT — accès libre -->
       <div class="nav-grp-lbl">Vente</div>
       <button class="ni" onclick="showSection('pos')"      data-s="pos">      <span class="ni-ico">🛒</span><span class="nl">Point de Vente</span></button>
-      <button class="ni" onclick="showSection('quick')"    data-s="quick">   <span class="ni-ico">⚡</span><span class="nl">Vente Rapide</span></button>
+      <button class="ni" onclick="showSection('quick')"    data-s="quick">   <span class="ni-ico">âš¡</span><span class="nl">Vente Rapide</span></button>
       <button class="ni" onclick="showSection('caisse')"   data-s="caisse">  <span class="ni-ico">💰</span><span class="nl">Caisse</span></button>
       <button class="ni" onclick="showSection('products')" data-s="products"><span class="ni-ico">📦</span><span class="nl">Produits</span></button>
       <button class="ni" onclick="showSection('mysales')"  data-s="mysales"> <span class="ni-ico">🧾</span><span class="nl">Mes ventes</span><span style="font-size:.6rem;background:rgba(232,115,12,.18);color:var(--accent);padding:1px 6px;border-radius:8px;margin-left:auto">Caissier</span></button>
@@ -1476,7 +1486,7 @@ async function _fbSyncAll(data) {
               <label>👤 <span id="cli-header-lbl">Client</span>
                 <span class="cli-preview" id="cli-preview-name"></span>
               </label>
-              <span class="cart-client-toggle">▼</span>
+              <span class="cart-client-toggle">â–¼</span>
             </div>
             <div class="cart-client-body">
               <select id="cart-cli-sel" onchange="onCliSelect()">
@@ -1608,7 +1618,7 @@ async function _fbSyncAll(data) {
         <div style="display:flex;gap:8px">
           <select id="stk-filter" onchange="renderStock()" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rsm);color:var(--text);padding:8px 12px;font-size:.85rem">
             <option value="">Tout le stock</option>
-            <option value="rupture">⛔ Rupture (0)</option>
+            <option value="rupture">â›" Rupture (0)</option>
             <option value="faible">⚠️ Stock faible (≤5)</option>
             <option value="ok">✅ Stock OK</option>
             <option value="infini">∞ Illimité</option>
@@ -1769,7 +1779,7 @@ async function _fbSyncAll(data) {
       <div class="fg"><label>Type d'opération</label>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
           <button class="fmt-btn active" id="stk-op-add" onclick="setStkOp('add',this)">➕ Entrée</button>
-          <button class="fmt-btn" id="stk-op-sub" onclick="setStkOp('sub',this)">➖ Sortie</button>
+          <button class="fmt-btn" id="stk-op-sub" onclick="setStkOp('sub',this)">âž– Sortie</button>
           <button class="fmt-btn" id="stk-op-set" onclick="setStkOp('set',this)">🎯 Définir</button>
         </div>
       </div>
@@ -1942,7 +1952,7 @@ async function _fbSyncAll(data) {
       <h2 id="adm-title">Vue d'ensemble</h2>
       <div style="display:flex;gap:10px;align-items:center">
         <span id="adm-clock" style="font-size:.78rem;color:#374151"></span>
-        <button class="btn-p sm" onclick="adminSection('payments')">⚡ Demandes en attente</button>
+        <button class="btn-p sm" onclick="adminSection('payments')">âš¡ Demandes en attente</button>
       </div>
     </div>
 
@@ -2268,7 +2278,7 @@ async function _fbSyncAll(data) {
       <!-- Statut Supabase -->
       <div class="adm-card" style="margin-bottom:20px;border-color:rgba(62,207,142,0.25)">
         <div class="adm-card-hdr" style="background:rgba(62,207,142,0.05)">
-          <h3>⚡ Supabase</h3>
+          <h3>âš¡ Supabase</h3>
           <span id="adm-sb-status-badge" style="font-size:.75rem;color:#64748B">Non vérifié</span>
         </div>
         <div class="adm-card-body" style="padding:20px">
@@ -2363,7 +2373,7 @@ alter table payments  enable row level security;</pre>
               <div style="font-size:.85rem;font-weight:700;color:#F0EDE8">Synchronisation temps réel</div>
               <div style="font-size:.75rem;color:#64748B;margin-top:2px">Active les listeners <code style="color:#FFA000">onSnapshot</code> Firestore</div>
             </div>
-            <button id="fb-toggle-btn" onclick="toggleFirebaseSync()" style="padding:8px 20px;border-radius:100px;font-size:.82rem;font-weight:700;border:2px solid rgba(255,160,0,0.4);background:rgba(255,160,0,0.08);color:#FFA000;cursor:pointer;transition:all .2s;white-space:nowrap">▶ Activer</button>
+            <button id="fb-toggle-btn" onclick="toggleFirebaseSync()" style="padding:8px 20px;border-radius:100px;font-size:.82rem;font-weight:700;border:2px solid rgba(255,160,0,0.4);background:rgba(255,160,0,0.08);color:#FFA000;cursor:pointer;transition:all .2s;white-space:nowrap">â–¶ Activer</button>
           </div>
 
           <!-- Champs config -->
@@ -2570,7 +2580,7 @@ const DB = {
     const all=this.get(t);
     const r={...rec,id:'id_'+Date.now()+'_'+Math.random().toString(36).substr(2,6),merchant_id:mid,created_at:new Date().toISOString()};
     all.push(r);this.set(t,all);
-    if(window._fbDb&&window.FB)window.FB.write(t,r.id,r).catch(()=>{});
+    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.write(t,r.id,r).catch(()=>{});
     return r;
   },
   update(t,id,ups,mid){
@@ -2578,13 +2588,13 @@ const DB = {
     if(i===-1)return false;
     all[i]={...all[i],...ups,updated_at:new Date().toISOString()};
     this.set(t,all);
-    if(window._fbDb&&window.FB)window.FB.write(t,id,all[i]).catch(()=>{});
+    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.write(t,id,all[i]).catch(()=>{});
     return true;
   },
   delete(t,id,mid){
     const all=this.get(t),f=all.filter(r=>!(r.id===id&&r.merchant_id===mid));
     this.set(t,f);
-    if(window._fbDb&&window.FB)window.FB.remove(t,id).catch(()=>{});
+    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.remove(t,id).catch(()=>{});
     return f.length<all.length;
   },
   _hash(s){let h=0;for(let i=0;i<s.length;i++){h=Math.imul(31,h)+s.charCodeAt(i)|0;}return 'h'+Math.abs(h).toString(36)},
@@ -3607,7 +3617,7 @@ const BT = {
   ],
 
   // ── Connexion BLE ─────────────────────────────────────────
-  async connect() {
+  connect: async function() {
     if (!navigator.bluetooth) {
       showToast('⚠️ Web Bluetooth requis — utilisez Chrome sur Android ou Edge.', 'error');
       return false;
@@ -3743,7 +3753,7 @@ const BT = {
   },
 
   // ── Envoi BLE avec gestion MTU et retry ─────────────────
-  async send(data) {
+  send: async function(data) {
     if (!this.char) return false;
     const chunkSize = this.mtu; // adapté au MTU négocié
     const useWoR    = this.char.properties.writeWithoutResponse;
@@ -4454,6 +4464,7 @@ async function loginMerchant(e) {
       const _mid = merchant.id;
       window.addEventListener('firebase-sdk-loaded', () => {
         window._fbResumeListenerRegistered = false;
+        if (!window._fbDb) return; // FIX: SDK non dispo malgré l'événement
         _startRealtimeListeners(_mid);
       }, { once: true });
     }
@@ -4498,7 +4509,14 @@ function demoLogin() {
   showPage('page-app');
   showToast('👋 Démo Restaurant Djolof chargée !', 'success');
 }
-function logout() { Auth.logout(); cart = []; pinUnlocked = false; showPage('page-landing'); }
+function logout() {
+  // Couper proprement les listeners Firebase avant de changer de session
+  if (typeof FB !== 'undefined') FB.stopListening();
+  _fbSyncActive = false;
+  _fbCurrentMerchantId = null;
+  window._fbResumeListenerRegistered = false;
+  Auth.logout(); cart = []; pinUnlocked = false; showPage('page-landing');
+}
 
 // ---- MODALS ----
 function closeMo(id) { document.getElementById(id)?.classList.add('hidden'); }
@@ -4553,7 +4571,7 @@ function renderStock() {
     if (p.stock === null) {
       statusHtml = '<span class="sbdg s-ok">∞ Illimité</span>'; statusOrder = 3;
     } else if (p.stock === 0) {
-      statusHtml = '<span class="sbdg s-zero">⛔ Rupture</span>'; statusOrder = 0;
+      statusHtml = '<span class="sbdg s-zero">â›" Rupture</span>'; statusOrder = 0;
     } else if (p.stock <= 5) {
       statusHtml = '<span class="sbdg s-low">⚠️ Faible</span>'; statusOrder = 1;
     } else {
@@ -5520,6 +5538,7 @@ function loadMerchantDataFromFirebase() {}
 // FIREBASE PANEL JS — Admin Développeur
 // ======================================================
 let _fbSyncActive = false;
+let _fbCurrentMerchantId = null; // suivi du marchand actif
 let _fbSnapshotUnsubs = [];
 const _FB_DEVICES_KEY = 'ds_fb_devices';
 let _deviceId = null;
@@ -5620,11 +5639,11 @@ function updateFirebaseBadge() {
   } else if (FB.ready()) {
     badge.textContent = '⏳ Configuré — inactif';
     badge.style.cssText = 'font-size:.75rem;padding:3px 10px;border-radius:100px;background:rgba(79,195,247,0.1);color:#4FC3F7';
-    if (btn) { btn.textContent = '▶ Activer'; btn.style.background = 'rgba(255,160,0,0.08)'; btn.style.borderColor = 'rgba(255,160,0,0.4)'; btn.style.color = '#FFA000'; }
+    if (btn) { btn.textContent = 'â–¶ Activer'; btn.style.background = 'rgba(255,160,0,0.08)'; btn.style.borderColor = 'rgba(255,160,0,0.4)'; btn.style.color = '#FFA000'; }
   } else {
     badge.textContent = '⚙️ Non configuré';
     badge.style.cssText = 'font-size:.75rem;padding:3px 10px;border-radius:100px;background:rgba(100,116,139,0.15);color:#64748B';
-    if (btn) { btn.textContent = '▶ Activer'; btn.style.background = 'rgba(255,160,0,0.08)'; btn.style.borderColor = 'rgba(255,160,0,0.4)'; btn.style.color = '#FFA000'; }
+    if (btn) { btn.textContent = 'â–¶ Activer'; btn.style.background = 'rgba(255,160,0,0.08)'; btn.style.borderColor = 'rgba(255,160,0,0.4)'; btn.style.color = '#FFA000'; }
   }
 }
 
@@ -5715,9 +5734,10 @@ function startFirebaseSync() {
     }
   }
   _fbSyncActive = true;
+  const m = typeof Auth !== 'undefined' ? Auth.current() : null;
+  _fbCurrentMerchantId = m ? m.id : null; // tracker le marchand actif
   window.FB_MODE = 'firebase';
   _registerCurrentDevice();
-  const m = typeof Auth !== 'undefined' ? Auth.current() : null;
   if (m) {
     FB.listenMerchant(m.id, (col) => {
       const active = document.querySelector('.section.active');
@@ -5739,8 +5759,9 @@ function startFirebaseSync() {
 
 function stopFirebaseSync() {
   _fbSyncActive = false;
+  _fbCurrentMerchantId = null; // reset du marchand suivi
   window.FB_MODE = 'api';
-  FB.stopListening(); // arrête tous les onSnapshot via FB._unsubs
+  FB.stopListening();
   _unregisterCurrentDevice();
   updateFirebaseBadge();
   refreshFirebaseDevices();
@@ -6272,15 +6293,16 @@ async function onNetworkOnline() {
 /** Déclenche la synchronisation via Service Worker */
 async function triggerSync() {
   // Option 1 : Background Sync API (Chrome Android)
-  if ('serviceWorker' in navigator && 'sync' in self.registration) {
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      await reg.sync.register('ds-sync-queue');
+  // FIX: self.registration n'existe que dans un Service Worker, pas dans la page
+  try {
+    const swReg = await navigator.serviceWorker.ready;
+    if ('sync' in swReg) {
+      await swReg.sync.register('ds-sync-queue');
       console.log('[App] Background Sync enregistré');
       return;
-    } catch(e) {
-      console.warn('[App] Background Sync non disponible:', e.message);
     }
+  } catch(e) {
+    console.warn('[App] Background Sync non disponible:', e.message);
   }
 
   // Option 2 : Message direct au SW
@@ -6428,13 +6450,22 @@ API.post = async function(endpoint, body) {
 // ============================================================
 function _startRealtimeListeners(merchantId) {
   if (!window._fbDb || !merchantId) return;
-  if (_fbSyncActive) {
-    // Déjà actif pour ce même marchand — ne rien faire
-    return;
+
+  // Si déjà actif pour le MÊME marchand, ne rien refaire
+  if (_fbSyncActive && _fbCurrentMerchantId === merchantId) return;
+
+  // Arrêter les listeners précédents (changement de compte ou reload)
+  if (_fbSyncActive || _fbCurrentMerchantId) {
+    FB.stopListening();
+    _fbSyncActive = false;
+    _fbCurrentMerchantId = null;
   }
+
   _fbSyncActive = true;
+  _fbCurrentMerchantId = merchantId;
   window.FB_MODE = 'firebase';
   _registerCurrentDevice();
+
   FB.listenMerchant(merchantId, (col) => {
     const active = document.querySelector('.section.active');
     const sec = active ? active.id.replace('s-','') : '';
@@ -6444,10 +6475,9 @@ function _startRealtimeListeners(merchantId) {
     } else if (typeof renderDashboard === 'function') {
       renderDashboard();
     }
-    // Toujours rafraîchir le dashboard si ce n'est pas la section active
     if (sec !== 'dashboard' && typeof renderDashboard === 'function') renderDashboard();
   });
-  console.log('🔥 Sync temps réel démarrée pour', merchantId);
+  console.log('[Sync] Listeners temps réel démarrés pour', merchantId);
 }
 
 function resumeSession() {
@@ -6818,6 +6848,7 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
       window._fbResumeListenerRegistered = true;
       window.addEventListener('firebase-sdk-loaded', () => {
         window._fbResumeListenerRegistered = false;
+        if (!window._fbDb) return; // FIX: SDK non dispo malgré l'événement
         _startRealtimeListeners(m.id);
       }, { once: true });
     }
