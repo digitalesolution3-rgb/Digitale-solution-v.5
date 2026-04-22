@@ -1051,10 +1051,7 @@ const FB = {
               } else {
                 const idx = all.findIndex(r => r.id === data.id);
                 if (idx !== -1) {
-                  // FIX: ne remplacer que si la version distante est plus récente
-                  const localTs  = all[idx].updated_at || all[idx].created_at || '0';
-                  const remoteTs = data.updated_at     || data.created_at     || '0';
-                  if (remoteTs >= localTs) all[idx] = data;
+                  all[idx] = data; // Firestore = source de vérité, toujours écraser
                 } else {
                   all.push(data);
                 }
@@ -1201,7 +1198,15 @@ async function _fbLoadData(merchantId) {
 
 async function _fbSync({ merchant_id, collection, item, items, delete: delId }) {
   if (!merchant_id || !collection) return { ok: true };
-  if (!FB.ready()) return { ok: true }; // silencieux — sera synced plus tard
+  // Attendre Firebase si pas encore prêt (max 8s) — critique pour sync multi-appareil
+  if (!FB.ready()) {
+    await new Promise(resolve => {
+      if (window._fbDb) { resolve(); return; }
+      const t = setTimeout(resolve, 8000);
+      window.addEventListener('firebase-sdk-loaded', () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+    if (!FB.ready()) { console.warn('[FB sync] Firebase non disponible — vente non synchronisée:', collection); return { ok: true }; }
+  }
   try {
     if (delId) {
       await FB.db().collection(collection).doc(delId).delete();
@@ -3152,12 +3157,12 @@ function processCheckout() {
   const allP = DB.get('products');
   cart.forEach(ci => { const idx = allP.findIndex(p => p.id === ci.pid && p.merchant_id === m.id); if (idx !== -1 && allP[idx].stock !== null) allP[idx].stock = Math.max(0, allP[idx].stock - ci.qty); });
   DB.set('products', allP);
-  // Sync API — vente + stock en arrière-plan
-  API.post('sync', { merchant_id: m.id, collection: 'sales', item: sale }).catch(()=>{});
-  API.post('sync', { merchant_id: m.id, collection: 'products', items: DB.forM('products', m.id) }).catch(()=>{});
+  // Sync Firebase — vente + stock en arrière-plan (attend Firebase si pas encore prêt)
+  API.post('sync', { merchant_id: m.id, collection: 'sales', item: sale }).catch(e => console.error('[sync sale]', e));
+  API.post('sync', { merchant_id: m.id, collection: 'products', items: DB.forM('products', m.id) }).catch(e => console.error('[sync products]', e));
   if (cliId) {
     const cli = DB.forM('clients', m.id).find(c => c.id === cliId);
-    if (cli) API.post('sync', { merchant_id: m.id, collection: 'clients', item: cli }).catch(()=>{});
+    if (cli) API.post('sync', { merchant_id: m.id, collection: 'clients', item: cli }).catch(e => console.error('[sync client]', e));
   }
   // Store for WA button
   currentSaleWA = cliWA;
@@ -6861,4 +6866,5 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
 
 </body>
 </html>
+
 
