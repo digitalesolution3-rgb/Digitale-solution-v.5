@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="fr" data-theme="dark">
 <head>
@@ -66,6 +67,11 @@ window._fbInit = async function(cfg) {
     window._fbApp = firebase.initializeApp(cfg, 'ds_' + Date.now());
     window._fbDb  = firebase.firestore(window._fbApp);
     window._fbDb.settings({ experimentalAutoDetectLongPolling: true, merge: true });
+    window._fbDb.enablePersistence({ synchronizeTabs: true }).catch(err => {
+      if (err.code !== 'failed-precondition' && err.code !== 'unimplemented') {
+        console.warn('[Firebase] enablePersistence:', err.code);
+      }
+    });
     console.log('🔥 Firebase initialisé — project:', cfg.projectId);
     window.dispatchEvent(new Event('firebase-sdk-loaded'));
   } catch(e) {
@@ -878,12 +884,12 @@ const API_BASE = window.location.origin; // conservé pour compatibilité SW
 // Console Firebase → Paramètres du projet → Vos applications → SDK config
 // ============================================================
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyBrQy4VuncezPeZ6vPTaiTmTWxqTVQm1ZI",
-  authDomain: "commerce-3ae6e.firebaseapp.com",
-  projectId: "commerce-3ae6e",
-  storageBucket: "commerce-3ae6e.firebasestorage.app",
-  messagingSenderId: "946906333487",
-  appId: "1:946906333487:web:d6cd511e80a3a0d0b921da"
+  apiKey: "AIzaSyD9nisNmNnagzRp-jNlwTbJ7q5bdPtF9Jw",
+  authDomain: "inte-84ea7.firebaseapp.com",
+  projectId: "inte-84ea7",
+  storageBucket: "inte-84ea7.firebasestorage.app",
+  messagingSenderId: "958738051181",
+  appId: "1:958738051181:web:e305c5d8cb1a4b95680f64",
 };
 window.FIREBASE_CONFIG = FIREBASE_CONFIG;
 // ============================================================
@@ -1051,7 +1057,10 @@ const FB = {
               } else {
                 const idx = all.findIndex(r => r.id === data.id);
                 if (idx !== -1) {
-                  all[idx] = data; // Firestore = source de vérité, toujours écraser
+                  // FIX: ne remplacer que si la version distante est plus récente
+                  const localTs  = all[idx].updated_at || all[idx].created_at || '0';
+                  const remoteTs = data.updated_at     || data.created_at     || '0';
+                  if (remoteTs >= localTs) all[idx] = data;
                 } else {
                   all.push(data);
                 }
@@ -1198,15 +1207,7 @@ async function _fbLoadData(merchantId) {
 
 async function _fbSync({ merchant_id, collection, item, items, delete: delId }) {
   if (!merchant_id || !collection) return { ok: true };
-  // Attendre Firebase si pas encore prêt (max 8s) — critique pour sync multi-appareil
-  if (!FB.ready()) {
-    await new Promise(resolve => {
-      if (window._fbDb) { resolve(); return; }
-      const t = setTimeout(resolve, 8000);
-      window.addEventListener('firebase-sdk-loaded', () => { clearTimeout(t); resolve(); }, { once: true });
-    });
-    if (!FB.ready()) { console.warn('[FB sync] Firebase non disponible — vente non synchronisée:', collection); return { ok: true }; }
-  }
+  if (!FB.ready()) return { ok: true }; // silencieux — sera synced plus tard
   try {
     if (delId) {
       await FB.db().collection(collection).doc(delId).delete();
@@ -2389,15 +2390,15 @@ alter table payments  enable row level security;</pre>
             </div>
             <div class="adm-fg">
               <label>Project ID</label>
-              <input id="fb-projectId" placeholder="posv5-78b92" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <input id="fb-projectId" placeholder="inte-84ea7" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
             <div class="adm-fg">
               <label>Auth Domain</label>
-              <input id="fb-authDomain" placeholder="posv5-78b92.firebaseapp.com" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <input id="fb-authDomain" placeholder="inte-84ea7.firebaseapp.com" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
             <div class="adm-fg">
               <label>Storage Bucket</label>
-              <input id="fb-storageBucket" placeholder="posv5-78b92.firebasestorage.app" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
+              <input id="fb-storageBucket" placeholder="inte-84ea7.firebasestorage.app" style="width:100%;background:#0A0E16;border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#F0EDE8;padding:9px 12px;font-size:.82rem"/>
             </div>
             <div class="adm-fg">
               <label>Messaging Sender ID</label>
@@ -2409,8 +2410,8 @@ alter table payments  enable row level security;</pre>
             </div>
           </div>
           <div style="background:rgba(255,160,0,0.06);border:1px solid rgba(255,160,0,0.2);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.75rem;color:#94A3B8;line-height:1.6">
-            📍 <strong style="color:#FFA000">Où trouver l'API Key ?</strong> Console Firebase → <em>posv5-78b92</em> → ⚙️ Paramètres du projet → Vos applications → SDK config<br/>
-            ℹ️ Project ID, Auth Domain et Storage Bucket sont pré-remplis automatiquement depuis <code style="color:#FFA000">posv5-78b92</code>. Seule l'<strong>API Key</strong> est obligatoire.
+            📍 <strong style="color:#FFA000">Où trouver l'API Key ?</strong> Console Firebase → <em>inte-84ea7</em> → ⚙️ Paramètres du projet → Vos applications → SDK config<br/>
+            ℹ️ Project ID, Auth Domain et Storage Bucket sont pré-remplis automatiquement depuis <code style="color:#FFA000">inte-84ea7</code>. Seule l'<strong>API Key</strong> est obligatoire.
           </div>
 
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
@@ -2585,7 +2586,7 @@ const DB = {
     const all=this.get(t);
     const r={...rec,id:'id_'+Date.now()+'_'+Math.random().toString(36).substr(2,6),merchant_id:mid,created_at:new Date().toISOString()};
     all.push(r);this.set(t,all);
-    if(window._fbDb&&typeof FB!=="undefined")FB.write(t,r.id,r).catch(e=>console.error('[DB.insert FB]',t,e.message));
+    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.write(t,r.id,r).catch(()=>{});
     return r;
   },
   update(t,id,ups,mid){
@@ -2593,13 +2594,13 @@ const DB = {
     if(i===-1)return false;
     all[i]={...all[i],...ups,updated_at:new Date().toISOString()};
     this.set(t,all);
-    if(window._fbDb&&typeof FB!=="undefined")FB.write(t,id,all[i]).catch(e=>console.error('[DB.update FB]',t,e.message));
+    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.write(t,id,all[i]).catch(()=>{});
     return true;
   },
   delete(t,id,mid){
     const all=this.get(t),f=all.filter(r=>!(r.id===id&&r.merchant_id===mid));
     this.set(t,f);
-    if(window._fbDb&&typeof FB!=="undefined")FB.remove(t,id).catch(e=>console.error('[DB.delete FB]',t,e.message));
+    if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.remove(t,id).catch(()=>{});
     return f.length<all.length;
   },
   _hash(s){let h=0;for(let i=0;i<s.length;i++){h=Math.imul(31,h)+s.charCodeAt(i)|0;}return 'h'+Math.abs(h).toString(36)},
@@ -3157,12 +3158,12 @@ function processCheckout() {
   const allP = DB.get('products');
   cart.forEach(ci => { const idx = allP.findIndex(p => p.id === ci.pid && p.merchant_id === m.id); if (idx !== -1 && allP[idx].stock !== null) allP[idx].stock = Math.max(0, allP[idx].stock - ci.qty); });
   DB.set('products', allP);
-  // Sync Firebase — vente + stock en arrière-plan (attend Firebase si pas encore prêt)
-  API.post('sync', { merchant_id: m.id, collection: 'sales', item: sale }).catch(e => console.error('[sync sale]', e));
-  API.post('sync', { merchant_id: m.id, collection: 'products', items: DB.forM('products', m.id) }).catch(e => console.error('[sync products]', e));
+  // Sync API — vente + stock en arrière-plan
+  API.post('sync', { merchant_id: m.id, collection: 'sales', item: sale }).catch(()=>{});
+  API.post('sync', { merchant_id: m.id, collection: 'products', items: DB.forM('products', m.id) }).catch(()=>{});
   if (cliId) {
     const cli = DB.forM('clients', m.id).find(c => c.id === cliId);
-    if (cli) API.post('sync', { merchant_id: m.id, collection: 'clients', item: cli }).catch(e => console.error('[sync client]', e));
+    if (cli) API.post('sync', { merchant_id: m.id, collection: 'clients', item: cli }).catch(()=>{});
   }
   // Store for WA button
   currentSaleWA = cliWA;
@@ -5606,12 +5607,12 @@ function renderFirebasePanelState() {
   let cfg = {};
   try { cfg = saved ? JSON.parse(saved) : {}; } catch(e) {}
 
-  // Pré-remplir avec valeurs sauvegardées ou defaults posv5-78b92
+  // Pré-remplir avec valeurs sauvegardées ou defaults inte-84ea7
   const defaults = {
     apiKey:            cfg.apiKey            || '',
-    projectId:         cfg.projectId         || 'posv5-78b92',
-    authDomain:        cfg.authDomain        || 'posv5-78b92.firebaseapp.com',
-    storageBucket:     cfg.storageBucket     || 'posv5-78b92.firebasestorage.app',
+    projectId:         cfg.projectId         || 'inte-84ea7',
+    authDomain:        cfg.authDomain        || 'inte-84ea7.firebaseapp.com',
+    storageBucket:     cfg.storageBucket     || 'inte-84ea7.firebasestorage.app',
     messagingSenderId: cfg.messagingSenderId || '',
     appId:             cfg.appId             || '',
   };
@@ -5658,7 +5659,7 @@ function saveFirebaseConfig() {
     showFbFeedback('⚠️ API Key obligatoire — Console Firebase → Paramètres → Config SDK.', 'error');
     return;
   }
-  const projectId = document.getElementById('fb-projectId')?.value.trim() || 'posv5-78b92';
+  const projectId = document.getElementById('fb-projectId')?.value.trim() || 'inte-84ea7';
   const cfg = {
     apiKey,
     projectId,
@@ -6866,5 +6867,4 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
 
 </body>
 </html>
-
 
