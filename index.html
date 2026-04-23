@@ -1,5 +1,4 @@
 
-
 <!DOCTYPE html>
 <html lang="fr" data-theme="dark">
 <head>
@@ -68,12 +67,20 @@ window._fbInit = async function(cfg) {
     window._fbDb  = firebase.firestore(window._fbApp);
     window._fbDb.settings({ experimentalAutoDetectLongPolling: true, merge: true });
     window._fbDb.enablePersistence({ synchronizeTabs: true }).catch(err => {
-      if (err.code !== 'failed-precondition' && err.code !== 'unimplemented') {
+      if (err.code !== 'failed-precondition' && err.code !== 'unimplemented')
         console.warn('[Firebase] enablePersistence:', err.code);
-      }
     });
     console.log('🔥 Firebase initialisé — project:', cfg.projectId);
     window.dispatchEvent(new Event('firebase-sdk-loaded'));
+    // Auto-démarrer les listeners si session déjà active
+    setTimeout(() => {
+      try {
+        if (typeof Auth !== 'undefined' && typeof _startRealtimeListeners !== 'undefined') {
+          const m = Auth.current();
+          if (m && m.id && !_fbSyncActive) _startRealtimeListeners(m.id);
+        }
+      } catch(e) { console.warn('[Firebase] auto-listener:', e.message); }
+    }, 500);
   } catch(e) {
     console.error('Firebase init error:', e.message);
     window._fbDb = null;
@@ -884,12 +891,12 @@ const API_BASE = window.location.origin; // conservé pour compatibilité SW
 // Console Firebase → Paramètres du projet → Vos applications → SDK config
 // ============================================================
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyD9nisNmNnagzRp-jNlwTbJ7q5bdPtF9Jw",
-  authDomain: "inte-84ea7.firebaseapp.com",
-  projectId: "inte-84ea7",
-  storageBucket: "inte-84ea7.firebasestorage.app",
-  messagingSenderId: "958738051181",
-  appId: "1:958738051181:web:e305c5d8cb1a4b95680f64",
+  apiKey: "AIzaSyBrQy4VuncezPeZ6vPTaiTmTWxqTVQm1ZI",
+  authDomain: "commerce-3ae6e.firebaseapp.com",
+  projectId: "commerce-3ae6e",
+  storageBucket: "commerce-3ae6e.firebasestorage.app",
+  messagingSenderId: "946906333487",
+  appId: "1:946906333487:web:d6cd511e80a3a0d0b921da"
 };
 window.FIREBASE_CONFIG = FIREBASE_CONFIG;
 // ============================================================
@@ -1057,7 +1064,6 @@ const FB = {
               } else {
                 const idx = all.findIndex(r => r.id === data.id);
                 if (idx !== -1) {
-                  // FIX: ne remplacer que si la version distante est plus récente
                   const localTs  = all[idx].updated_at || all[idx].created_at || '0';
                   const remoteTs = data.updated_at     || data.created_at     || '0';
                   if (remoteTs >= localTs) all[idx] = data;
@@ -1068,7 +1074,23 @@ const FB = {
               }
               changed++;
             });
-            if (changed > 0 && onUpdate) onUpdate(col, changed);
+            if (changed > 0) {
+              // Render toutes les vues concernées (pas seulement la section active)
+              try {
+                if (col === 'products' || col === 'configs') {
+                  if (typeof renderProducts  === 'function') renderProducts();
+                  if (typeof renderStock     === 'function') renderStock();
+                }
+                if (col === 'sales') {
+                  if (typeof renderSales     === 'function') renderSales();
+                }
+                if (col === 'clients') {
+                  if (typeof renderClients   === 'function') renderClients();
+                }
+                if (typeof renderDashboard   === 'function') renderDashboard();
+              } catch(re) {}
+              if (onUpdate) onUpdate(col, changed);
+            }
           }, err => console.warn('[FB] onSnapshot', col, err.message));
         this._unsubs.push(unsub);
       } catch(e) { console.warn('[FB] listen setup', col, e.message); }
@@ -4463,15 +4485,27 @@ async function loginMerchant(e) {
     // Badge notifications stock
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(merchant.id);
     // Démarrer sync temps réel automatiquement
+    const _startSync = (_mid) => {
+      _startRealtimeListeners(_mid);
+      // Forcer un pull + render complet après connexion (essentiel sur nouvel appareil)
+      if (FB.ready()) {
+        FB.pullAll(_mid).then(() => {
+          if (typeof renderDashboard === 'function') renderDashboard();
+          if (typeof renderProducts  === 'function') renderProducts();
+          if (typeof renderSales     === 'function') renderSales();
+          if (typeof renderClients   === 'function') renderClients();
+        }).catch(() => {});
+      }
+    };
     if (window._fbDb) {
-      _startRealtimeListeners(merchant.id);
+      _startSync(merchant.id);
     } else if (!window._fbResumeListenerRegistered) {
       window._fbResumeListenerRegistered = true;
       const _mid = merchant.id;
       window.addEventListener('firebase-sdk-loaded', () => {
         window._fbResumeListenerRegistered = false;
-        if (!window._fbDb) return; // FIX: SDK non dispo malgré l'événement
-        _startRealtimeListeners(_mid);
+        if (!window._fbDb) return;
+        _startSync(_mid);
       }, { once: true });
     }
 
