@@ -63,21 +63,30 @@ window._fbInit = async function(cfg) {
       window._fbApp = null;
       window._fbDb  = null;
     }
-    window._fbApp = firebase.initializeApp(cfg, 'ds_' + Date.now());
+    // Nom fixe 'ds-pos' — évite les instances orphelines à chaque _fbInit()
+    const existingApp = firebase.apps ? firebase.apps.find(a => a.name === 'ds-pos') : null;
+    if (existingApp) {
+      try { await existingApp.delete(); } catch(e) {}
+    }
+    window._fbApp = firebase.initializeApp(cfg, 'ds-pos');
     window._fbDb  = firebase.firestore(window._fbApp);
     window._fbDb.settings({ experimentalAutoDetectLongPolling: true, merge: true });
     window._fbDb.enablePersistence({ synchronizeTabs: true }).catch(err => {
-      if (err.code !== 'failed-precondition' && err.code !== 'unimplemented')
+      if (err.code !== 'failed-precondition' && err.code !== 'unimplemented') {
         console.warn('[Firebase] enablePersistence:', err.code);
+      }
     });
-    console.log('🔥 Firebase initialisé — project:', cfg.projectId);
+    console.log('\U0001f525 Firebase initialisé — project:', cfg.projectId);
     window.dispatchEvent(new Event('firebase-sdk-loaded'));
-    // Auto-démarrer les listeners si session déjà active
+    // Auto-démarrer les listeners si une session marchand est déjà active
     setTimeout(() => {
       try {
         if (typeof Auth !== 'undefined' && typeof _startRealtimeListeners !== 'undefined') {
           const m = Auth.current();
-          if (m && m.id && !_fbSyncActive) _startRealtimeListeners(m.id);
+          if (m && m.id && !_fbSyncActive) {
+            console.log('[Firebase] Auto-démarrage listeners pour session existante:', m.id);
+            _startRealtimeListeners(m.id);
+          }
         }
       } catch(e) { console.warn('[Firebase] auto-listener:', e.message); }
     }, 500);
@@ -1064,8 +1073,11 @@ const FB = {
               } else {
                 const idx = all.findIndex(r => r.id === data.id);
                 if (idx !== -1) {
-                  const localTs  = all[idx].updated_at || all[idx].created_at || '0';
-                  const remoteTs = data.updated_at     || data.created_at     || '0';
+                  // FIX: ne remplacer que si la version distante est plus récente
+                  // Utiliser un timestamp numérique pour comparaison fiable (évite '0'>='0' string)
+                  const tsVal = ts => ts ? new Date(ts).getTime() : 0;
+                  const localTs  = tsVal(all[idx].updated_at || all[idx].created_at);
+                  const remoteTs = tsVal(data.updated_at     || data.created_at);
                   if (remoteTs >= localTs) all[idx] = data;
                 } else {
                   all.push(data);
@@ -1074,23 +1086,7 @@ const FB = {
               }
               changed++;
             });
-            if (changed > 0) {
-              // Render toutes les vues concernées (pas seulement la section active)
-              try {
-                if (col === 'products' || col === 'configs') {
-                  if (typeof renderProducts  === 'function') renderProducts();
-                  if (typeof renderStock     === 'function') renderStock();
-                }
-                if (col === 'sales') {
-                  if (typeof renderSales     === 'function') renderSales();
-                }
-                if (col === 'clients') {
-                  if (typeof renderClients   === 'function') renderClients();
-                }
-                if (typeof renderDashboard   === 'function') renderDashboard();
-              } catch(re) {}
-              if (onUpdate) onUpdate(col, changed);
-            }
+            if (changed > 0 && onUpdate) onUpdate(col, changed);
           }, err => console.warn('[FB] onSnapshot', col, err.message));
         this._unsubs.push(unsub);
       } catch(e) { console.warn('[FB] listen setup', col, e.message); }
@@ -1837,7 +1833,7 @@ async function _fbSyncAll(data) {
     <div class="mbody">
       <!-- Format selector -->
       <div class="print-fmt">
-        <button class="fmt-btn active" id="fmt-a4" onclick="setPrintFmt('a4')">📄 A4 Standard</button>
+        <button class="fmt-btn" id="fmt-a4" onclick="setPrintFmt('a4')" style="display:none">📄 A4 Standard</button>
         <button class="fmt-btn" id="fmt-58" onclick="setPrintFmt('58')">🖨️ Thermique 58mm</button>
         <button class="fmt-btn" id="fmt-80" onclick="setPrintFmt('80')">🖨️ Thermique 80mm</button>
       </div>
@@ -2606,7 +2602,7 @@ const DB = {
   forM(t,mid){return this.get(t).filter(r=>r.merchant_id===mid)},
   insert(t,rec,mid){
     const all=this.get(t);
-    const r={...rec,id:'id_'+Date.now()+'_'+Math.random().toString(36).substr(2,6),merchant_id:mid,created_at:new Date().toISOString()};
+    const r={...rec,id:'id_'+Date.now()+'_'+Math.random().toString(36).substr(2,6),merchant_id:mid,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
     all.push(r);this.set(t,all);
     if(window._fbDb&&typeof FB!=="undefined"&&_fbSyncActive)FB.write(t,r.id,r).catch(()=>{});
     return r;
@@ -3191,7 +3187,7 @@ function processCheckout() {
   currentSaleWA = cliWA;
   currentSaleName = cliNom;
   // Show invoice
-  setPrintFmt('a4');
+  setPrintFmt('58');
   showInvoice(sale, m, cfg);
   // Marketing toast
   showToast('🎉 ' + (cfg.message_accueil || 'Merci pour votre achat chez ' + m.nom_commerce + ' !'), 'success');
@@ -4035,7 +4031,7 @@ function viewSaleInvoice(sid) {
   const m = Auth.current(), s = DB.forM('sales', m.id).find(x => x.id === sid); if (!s) return;
   currentSaleWA = s.client_wa || '';
   currentSaleName = s.client_nom;
-  setPrintFmt('a4');
+  setPrintFmt('58');
   showInvoice(s, m, getConfig());
 }
 
@@ -4485,27 +4481,15 @@ async function loginMerchant(e) {
     // Badge notifications stock
     if (typeof StockNotif !== 'undefined') StockNotif._updateBadge(merchant.id);
     // Démarrer sync temps réel automatiquement
-    const _startSync = (_mid) => {
-      _startRealtimeListeners(_mid);
-      // Forcer un pull + render complet après connexion (essentiel sur nouvel appareil)
-      if (FB.ready()) {
-        FB.pullAll(_mid).then(() => {
-          if (typeof renderDashboard === 'function') renderDashboard();
-          if (typeof renderProducts  === 'function') renderProducts();
-          if (typeof renderSales     === 'function') renderSales();
-          if (typeof renderClients   === 'function') renderClients();
-        }).catch(() => {});
-      }
-    };
     if (window._fbDb) {
-      _startSync(merchant.id);
+      _startRealtimeListeners(merchant.id);
     } else if (!window._fbResumeListenerRegistered) {
       window._fbResumeListenerRegistered = true;
       const _mid = merchant.id;
       window.addEventListener('firebase-sdk-loaded', () => {
         window._fbResumeListenerRegistered = false;
-        if (!window._fbDb) return;
-        _startSync(_mid);
+        if (!window._fbDb) return; // FIX: SDK non dispo malgré l'événement
+        _startRealtimeListeners(_mid);
       }, { once: true });
     }
 
@@ -5603,38 +5587,73 @@ function _getDeviceName() {
   return '🌐 Navigateur';
 }
 
-function _registerCurrentDevice() {
+// ── Présence appareils dans Firestore ──────────────────────────
+// Les appareils écrivent leur statut dans merchants/{mid}/devices/{deviceId}
+// Tous les appareils connectés voient la liste en temps réel via onSnapshot.
+
+let _devicePresenceUnsub = null; // listener présence appareils (nettoyage propre)
+
+function _registerCurrentDevice(merchantId) {
+  if (!FB.ready() || !merchantId) return;
   try {
-    const devices = JSON.parse(localStorage.getItem(_FB_DEVICES_KEY) || '[]');
-    const id = _getDeviceId();
-    const idx = devices.findIndex(d => d.id === id);
-    const entry = { id, name: _getDeviceName(), connectedAt: new Date().toISOString(), active: true };
-    if (idx !== -1) devices[idx] = entry; else devices.push(entry);
-    localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(devices));
+    const id    = _getDeviceId();
+    const entry = {
+      id,
+      name: _getDeviceName(),
+      connectedAt: new Date().toISOString(),
+      active: true,
+      force_disconnect: false,
+      merchant_id: merchantId
+    };
+    window._fbDb
+      .collection('merchants').doc(merchantId)
+      .collection('devices').doc(id)
+      .set(entry, { merge: true })
+      .catch(e => console.warn('[Devices] register:', e.message));
   } catch(e) {}
 }
 
-function _unregisterCurrentDevice() {
+function _unregisterCurrentDevice(merchantId) {
+  if (!FB.ready() || !merchantId) return;
   try {
-    const devices = JSON.parse(localStorage.getItem(_FB_DEVICES_KEY) || '[]');
     const id = _getDeviceId();
-    const updated = devices.map(d => d.id === id ? { ...d, active: false, disconnectedAt: new Date().toISOString() } : d);
-    localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(updated));
+    window._fbDb
+      .collection('merchants').doc(merchantId)
+      .collection('devices').doc(id)
+      .set({ active: false, disconnectedAt: new Date().toISOString() }, { merge: true })
+      .catch(e => console.warn('[Devices] unregister:', e.message));
   } catch(e) {}
 }
 
-// BroadcastChannel — déconnexion forcée inter-appareils
-if (window.BroadcastChannel) {
-  try {
-    const _fbCtrl = new BroadcastChannel('ds_firebase_ctrl');
-    _fbCtrl.onmessage = (e) => {
-      if (e.data?.type === 'FORCE_DISCONNECT' && e.data.targetId === _getDeviceId()) {
+// Écoute Firestore la liste des appareils + détecte FORCE_DISCONNECT pour cet appareil
+function _startDevicePresenceListener(merchantId) {
+  if (!FB.ready() || !merchantId) return;
+  if (_devicePresenceUnsub) { try { _devicePresenceUnsub(); } catch(e) {} }
+  const myId = _getDeviceId();
+  _devicePresenceUnsub = window._fbDb
+    .collection('merchants').doc(merchantId)
+    .collection('devices')
+    .onSnapshot(snap => {
+      // Mettre à jour le cache local pour refreshFirebaseDevices()
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(list));
+      // Détecter si CET appareil doit être déconnecté de force
+      const me = list.find(d => d.id === myId);
+      if (me && me.force_disconnect) {
+        _unregisterCurrentDevice(merchantId);
         stopFirebaseSync();
         if (typeof showToast === 'function') showToast('⚠️ Connexion coupée par l\'administrateur.', 'error');
       }
-    };
-  } catch(e) {}
+      refreshFirebaseDevices();
+    }, err => console.warn('[Devices] listener:', err.message));
 }
+
+function _stopDevicePresenceListener() {
+  if (_devicePresenceUnsub) { try { _devicePresenceUnsub(); } catch(e) {} _devicePresenceUnsub = null; }
+}
+
+// BroadcastChannel supprimé — la déconnexion forcée passe maintenant par Firestore
+// (champ force_disconnect dans merchants/{mid}/devices/{deviceId})
 
 function renderFirebasePanelState() {
   const saved = localStorage.getItem('ds_firebase_cfg');
@@ -5643,14 +5662,14 @@ function renderFirebasePanelState() {
 
   // Pré-remplir avec valeurs sauvegardées ou defaults inte-84ea7
   const defaults = {
-    apiKey:            cfg.apiKey            || '',
-    projectId:         cfg.projectId         || 'inte-84ea7',
-    authDomain:        cfg.authDomain        || 'inte-84ea7.firebaseapp.com',
-    storageBucket:     cfg.storageBucket     || 'inte-84ea7.firebasestorage.app',
-    messagingSenderId: cfg.messagingSenderId || '',
-    appId:             cfg.appId             || '',
-  };
-  ['apiKey','projectId','authDomain','storageBucket','messagingSenderId','appId'].forEach(f => {
+    apiKey: "AIzaSyBrQy4VuncezPeZ6vPTaiTmTWxqTVQm1ZI",
+  authDomain: "commerce-3ae6e.firebaseapp.com",
+  projectId: "commerce-3ae6e",
+  storageBucket: "commerce-3ae6e.firebasestorage.app",
+  messagingSenderId: "946906333487",
+  appId: "1:946906333487:web:d6cd511e80a3a0d0b921da"
+};
+ ['apiKey','projectId','authDomain','storageBucket','messagingSenderId','appId'].forEach(f => {
     const el = document.getElementById('fb-' + f);
     if (el) el.value = defaults[f];
   });
@@ -5777,7 +5796,8 @@ function startFirebaseSync() {
   const m = typeof Auth !== 'undefined' ? Auth.current() : null;
   _fbCurrentMerchantId = m ? m.id : null; // tracker le marchand actif
   window.FB_MODE = 'firebase';
-  _registerCurrentDevice();
+  _registerCurrentDevice(m ? m.id : null);
+  if (m) _startDevicePresenceListener(m.id);
   if (m) {
     FB.listenMerchant(m.id, (col) => {
       const active = document.querySelector('.section.active');
@@ -5798,11 +5818,13 @@ function startFirebaseSync() {
 }
 
 function stopFirebaseSync() {
+  const mid = _fbCurrentMerchantId; // capturer avant reset
   _fbSyncActive = false;
   _fbCurrentMerchantId = null; // reset du marchand suivi
   window.FB_MODE = 'api';
   FB.stopListening();
-  _unregisterCurrentDevice();
+  _stopDevicePresenceListener();
+  _unregisterCurrentDevice(mid);
   updateFirebaseBadge();
   refreshFirebaseDevices();
   ADB.addActivity('firebase_stop', 'Sync Firebase désactivée');
@@ -5840,21 +5862,22 @@ function refreshFirebaseDevices() {
 
 function forceDisconnectDevice(deviceId) {
   if (!confirm('Forcer la déconnexion de cet appareil ?')) return;
-  try {
-    const devices = JSON.parse(localStorage.getItem(_FB_DEVICES_KEY) || '[]');
-    const updated = devices.map(d => d.id === deviceId
-      ? { ...d, active: false, forceDisconnected: true, disconnectedAt: new Date().toISOString() }
-      : d);
-    localStorage.setItem(_FB_DEVICES_KEY, JSON.stringify(updated));
-    if (window.BroadcastChannel) {
-      const bc = new BroadcastChannel('ds_firebase_ctrl');
-      bc.postMessage({ type: 'FORCE_DISCONNECT', targetId: deviceId });
-      bc.close();
-    }
-    showFbFeedback('✅ Appareil déconnecté.', 'success');
-    ADB.addActivity('firebase_disconnect', 'Appareil déconnecté : ' + deviceId);
-    refreshFirebaseDevices();
-  } catch(e) { showFbFeedback('❌ ' + e.message, 'error'); }
+  const m = typeof Auth !== 'undefined' ? Auth.current() : null;
+  if (!m || !FB.ready()) {
+    showFbFeedback('❌ Firebase non disponible.', 'error');
+    return;
+  }
+  // Écrire force_disconnect: true dans Firestore — l'appareil cible le détecte via son onSnapshot
+  window._fbDb
+    .collection('merchants').doc(m.id)
+    .collection('devices').doc(deviceId)
+    .set({ active: false, force_disconnect: true, disconnectedAt: new Date().toISOString() }, { merge: true })
+    .then(() => {
+      showFbFeedback('✅ Signal de déconnexion envoyé à l\'appareil.', 'success');
+      ADB.addActivity('firebase_disconnect', 'Appareil déconnecté : ' + deviceId);
+      refreshFirebaseDevices();
+    })
+    .catch(e => showFbFeedback('❌ ' + e.message, 'error'));
 }
 
 function showFbFeedback(msg, type) {
@@ -6504,7 +6527,8 @@ function _startRealtimeListeners(merchantId) {
   _fbSyncActive = true;
   _fbCurrentMerchantId = merchantId;
   window.FB_MODE = 'firebase';
-  _registerCurrentDevice();
+  _registerCurrentDevice(merchantId);
+  _startDevicePresenceListener(merchantId);
 
   FB.listenMerchant(merchantId, (col) => {
     const active = document.querySelector('.section.active');
@@ -6901,4 +6925,5 @@ document.addEventListener('DOMContentLoaded', async () => {  console.log('🚀 D
 
 </body>
 </html>
+
 
